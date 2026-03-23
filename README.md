@@ -15,6 +15,7 @@ A bash script that runs OpenCode in a Docker container. It dynamically mounts yo
 - **OAuth authentication support** - Built-in port forwarding for OpenAI and GitHub Copilot sign-in
 - **Customizable config directory** - Mount your own OpenCode config for dotfiles integration
 - **Bash debug mode** - Open an interactive shell for troubleshooting with `--bash`
+- **Optional cache pruning** - Run `--prune` (or enable `AUTO_PRUNE`) to control Docker disk growth
 
 
 ## Prerequisites
@@ -142,6 +143,7 @@ Options:
   -u, --update       Rebuild docker and update OpenCode before starting container
   -b, --bash         Open an interactive bash session instead of running OpenCode
   -o, --oauth        Enable OAuth callback port (127.0.0.1:1455) for OpenAI sign-in
+  -p, --prune        Prune unused Docker build cache and dangling images before start
   -f, --force        Continue even in protected directories
   -h, --help         Show this help and OpenCode help
 ---------------------------------------------------------------
@@ -340,6 +342,25 @@ Run with shell access for debugging:
 ```bash
 codebox --bash
 ```
+
+### Docker Storage Management
+
+If you run CodeBox frequently, Docker build cache and dangling image layers can accumulate over time.
+
+- Run manual cleanup before a session:
+
+```bash
+codebox --prune
+```
+
+- Enable automatic cleanup in `.env` after image rebuilds/updates:
+
+```bash
+AUTO_PRUNE=true
+PRUNE_MAX_AGE=168h
+```
+
+`PRUNE_MAX_AGE` controls which build cache entries are removed by `docker builder prune`.
 
 ## Cross-Platform Support
 

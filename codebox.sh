@@ -13,6 +13,27 @@ exit_error() {
     exit 1
 }
 
+# Docker cleanup helper to control storage growth
+run_docker_prune() {
+    local prune_max_age="$1"
+
+    echo "---------------------------------------------------------------"
+    echo "🧹 Pruning unused Docker cache and dangling images..."
+    echo "   Cache max age: ${prune_max_age}"
+    echo "---------------------------------------------------------------"
+
+    if ! docker image prune -f --filter "dangling=true" >/dev/null; then
+        echo "⚠️  Warning: docker image prune failed; continuing"
+    fi
+
+    if ! docker builder prune -f --filter "until=${prune_max_age}" >/dev/null; then
+        echo "⚠️  Warning: docker builder prune failed; continuing"
+    fi
+
+    echo "✅ Docker prune complete"
+    echo ""
+}
+
 # Read a key from .env (returns empty if missing)
 read_env_value() {
     local key="$1"
@@ -29,6 +50,7 @@ read_env_value() {
 #   -u, --update       Rebuild docker and update OpenCode before starting container
 #   -b, --bash         Open an interactive bash session instead of running OpenCode
 #   -o, --oauth        Enable OAuth callback port (127.0.0.1:1455) for OpenAI sign-in
+#   -p, --prune        Prune unused Docker build cache and dangling images before start
 #   -f, --force        Continue even in protected directories
 #   -h, --help         Show this help and OpenCode help
 main() {
@@ -40,6 +62,7 @@ main() {
     local BASH_MODE=false
     local FORCE_MODE=false
     local OAUTH_ENABLED=false
+    local PRUNE_REQUESTED=false
 
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -57,6 +80,10 @@ main() {
                 ;;
             -o|--oauth)
                 OAUTH_ENABLED=true
+                shift
+                ;;
+            -p|--prune)
+                PRUNE_REQUESTED=true
                 shift
                 ;;
             -f|--force)
@@ -99,6 +126,7 @@ main() {
         echo "  -u, --update       Rebuild docker and update OpenCode before starting container"
         echo "  -b, --bash         Open an interactive bash session instead of running OpenCode"
         echo "  -o, --oauth        Enable OAuth callback port (127.0.0.1:1455) for OpenAI sign-in"
+        echo "  -p, --prune        Prune unused Docker build cache and dangling images before start"
         echo "  -f, --force        Continue even in protected directories"
         echo "  -h, --help         Show this help and OpenCode help"
         echo "---------------------------------------------------------------"
@@ -281,6 +309,12 @@ main() {
         echo ""
     fi
 
+    # Optional Docker cleanup controls
+    local AUTO_PRUNE=$(read_env_value AUTO_PRUNE)
+    AUTO_PRUNE="${AUTO_PRUNE:-false}"
+    local PRUNE_MAX_AGE=$(read_env_value PRUNE_MAX_AGE)
+    PRUNE_MAX_AGE="${PRUNE_MAX_AGE:-168h}"
+
     # Check if image exists or if it was built with different UID/GID/CODEBOX_NAME
     IMAGE_ENV=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' opencode-dev:latest 2>/dev/null || true)
     IMAGE_UID=$(printf '%s\n' "$IMAGE_ENV" | awk -F= '$1=="UID"{print $2; exit}')
@@ -296,6 +330,7 @@ main() {
 
     NEEDS_REBUILD=false
     REBUILD_REASON=""
+    IMAGE_REBUILT=false
 
     if [ -z "$IMAGE_UID" ] || [ "$IMAGE_UID" != "$USER_UID" ] || [ -z "$IMAGE_GID" ] || [ "$IMAGE_GID" != "$USER_GID" ]; then
         NEEDS_REBUILD=true
@@ -344,8 +379,6 @@ main() {
         ENABLE_SNAKEMAKE_STACK="${ENABLE_SNAKEMAKE_STACK:-false}"
         SNAKEMAKE_VERSION="${SNAKEMAKE_VERSION:-8.30}"
         docker build \
-            --pull \
-            --no-cache \
             --build-arg UID="$USER_UID" \
             --build-arg GID="$USER_GID" \
             --build-arg OPENCODE_VERSION="$OPENCODE_VERSION" \
@@ -356,6 +389,14 @@ main() {
             --build-arg SNAKEMAKE_VERSION="$SNAKEMAKE_VERSION" \
             -t opencode-dev:latest \
             "$OPENCODE_DOCKER_DIR"
+        IMAGE_REBUILT=true
+    fi
+
+    # Manual prune, or optional prune after rebuild/update
+    if [ "$PRUNE_REQUESTED" = true ]; then
+        run_docker_prune "$PRUNE_MAX_AGE"
+    elif [ "$AUTO_PRUNE" = "true" ] && { [ "$UPDATE_REQUESTED" = true ] || [ "$IMAGE_REBUILT" = true ]; }; then
+        run_docker_prune "$PRUNE_MAX_AGE"
     fi
 
     # Check if HOST_OPENCODE_CONFIG_DIR is set in .env
