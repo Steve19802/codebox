@@ -232,7 +232,7 @@ main() {
     fi
 
     # Create required host directories for OpenCode
-    if [ ! -d ~/.local/share/opencode ] || [ ! -d ~/.local/state/opencode ]; then
+    if [ ! -d ~/.local/share/opencode ] || [ ! -d ~/.local/state/opencode ] || [ ! -d ~/.cache/opencode ]; then
         echo "------------------------------------------------------------------------"
         echo "📁 Missing OpenCode directories used to maintain data and state across sessions..."
         if [ ! -d ~/.local/share/opencode ]; then
@@ -242,6 +242,10 @@ main() {
         if [ ! -d ~/.local/state/opencode ]; then
             echo "  - Creating directory [OCState]: ${HOME}/.local/state/opencode"
             mkdir -p ~/.local/state/opencode
+        fi
+        if [ ! -d ~/.cache/opencode ]; then
+            echo "  - Creating directory [OCCache]: ${HOME}/.cache/opencode"
+            mkdir -p ~/.cache/opencode
         fi
         echo "------------------------------------------------------------------------"
         echo ""
@@ -450,6 +454,7 @@ main() {
         fi
         echo "   - [OCData]   ${HOME}/.local/share/opencode → /home/${USERNAME}/.local/share/opencode"
         echo "   - [OCState]  ${HOME}/.local/state/opencode → /home/${USERNAME}/.local/state/opencode"
+        echo "   - [OCCache]  ${HOME}/.cache/opencode → /home/${USERNAME}/.cache/opencode"
         if [ "$OAUTH_ENABLED" = true ]; then
             echo "   OAuth callback: http://127.0.0.1:1455"
         fi
@@ -476,6 +481,7 @@ main() {
         "${CONFIG_MOUNT_ARGS[@]}"
         -v "${HOME}/.local/share/opencode:/home/${USERNAME}/.local/share/opencode"
         -v "${HOME}/.local/state/opencode:/home/${USERNAME}/.local/state/opencode"
+        -v "${HOME}/.cache/opencode:/home/${USERNAME}/.cache/opencode"
     )
 
     # Add OAuth port binding if requested
