@@ -459,7 +459,14 @@ main() {
             echo "   OAuth callback: http://127.0.0.1:1455"
         fi
     fi
-
+    
+    # Check if a custom network was provided via environment variable
+    NETWORK_FLAG=""
+    if [[ -v PROJECT_NETWORK ]]; then
+        NETWORK_FLAG="--network $PROJECT_NETWORK"
+        echo "   Attaching CodeBox to network: $PROJECT_NETWORK"
+    fi
+    
     echo "---------------------------------------------------------------"
     echo ""
     local CONFIG_MOUNT_ARGS=()
@@ -472,6 +479,7 @@ main() {
         --rm -it
         --cap-drop ALL
         --security-opt no-new-privileges
+        $NETWORK_FLAG
         --env-file "$OPENCODE_DOCKER_DIR/.env"
         -e CODEBOX_NAME="${CODEBOX_NAME}"
         -e TZ="$TZ_VALUE"
