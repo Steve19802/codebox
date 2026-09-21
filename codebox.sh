@@ -51,6 +51,7 @@ read_env_value() {
 #   -b, --bash         Open an interactive bash session instead of running OpenCode
 #   -o, --oauth        Enable OAuth callback port (127.0.0.1:1455) for OpenAI sign-in
 #   -p, --prune        Prune unused Docker build cache and dangling images before start
+#   -a, --agy          Launch Antigravity CLI (agy) instead of OpenCode
 #   -f, --force        Continue even in protected directories
 #   -h, --help         Show this help and OpenCode help
 main() {
@@ -63,6 +64,7 @@ main() {
     local FORCE_MODE=false
     local OAUTH_ENABLED=false
     local PRUNE_REQUESTED=false
+    local AGY_MODE=false
 
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -84,6 +86,10 @@ main() {
                 ;;
             -p|--prune)
                 PRUNE_REQUESTED=true
+                shift
+                ;;
+            -a|--agy)
+                AGY_MODE=true
                 shift
                 ;;
             -f|--force)
@@ -127,6 +133,7 @@ main() {
         echo "  -b, --bash         Open an interactive bash session instead of running OpenCode"
         echo "  -o, --oauth        Enable OAuth callback port (127.0.0.1:1455) for OpenAI sign-in"
         echo "  -p, --prune        Prune unused Docker build cache and dangling images before start"
+        echo "  -a, --agy          Launch Antigravity CLI (agy) instead of OpenCode"
         echo "  -f, --force        Continue even in protected directories"
         echo "  -h, --help         Show this help and OpenCode help"
         echo "---------------------------------------------------------------"
@@ -283,6 +290,24 @@ main() {
     CODEBOX_NAME="${CODEBOX_NAME:-BOX}"
     local CONTAINER_WORKDIR="/${CODEBOX_NAME}/${CONTAINER_HOSTNAME}/${WORKSPACE_NAME}"
 
+    # Determine which launcher to run: agy or opencode
+    # Priority: 1. -a/--agy flag, 2. DEFAULT_LAUNCHER in .env, 3. opencode (default)
+    local LAUNCHER="opencode"
+    local DEFAULT_LAUNCHER=$(read_env_value DEFAULT_LAUNCHER)
+    DEFAULT_LAUNCHER="${DEFAULT_LAUNCHER:-opencode}"
+    if [ "$AGY_MODE" = true ] || [ "$DEFAULT_LAUNCHER" = "agy" ]; then
+        LAUNCHER="agy"
+    fi
+
+    # Ensure host directory for Antigravity CLI (agy) data persists across sessions
+    if [ "$LAUNCHER" = "agy" ] && [ ! -d "$HOME/.gemini" ]; then
+        echo "------------------------------------------------------------------------"
+        echo "📁 Creating directory [AGYData]: ${HOME}/.gemini"
+        mkdir -p "$HOME/.gemini"
+        echo "------------------------------------------------------------------------"
+        echo ""
+    fi
+
     if [ "$UPDATE_REQUESTED" = true ]; then
         echo "---------------------------------------------------------------"
         echo "🔄 Updating OpenCode Docker container..."
@@ -292,9 +317,11 @@ main() {
         local OPENCODE_VERSION=$(read_env_value OPENCODE_VERSION)
         local ENABLE_SNAKEMAKE_STACK=$(read_env_value ENABLE_SNAKEMAKE_STACK)
         local SNAKEMAKE_VERSION=$(read_env_value SNAKEMAKE_VERSION)
+        local ENABLE_AGY=$(read_env_value ENABLE_AGY)
         OPENCODE_VERSION="${OPENCODE_VERSION:-latest}"
         ENABLE_SNAKEMAKE_STACK="${ENABLE_SNAKEMAKE_STACK:-false}"
         SNAKEMAKE_VERSION="${SNAKEMAKE_VERSION:-8.30}"
+        ENABLE_AGY="${ENABLE_AGY:-false}"
         docker build \
             --pull \
             --no-cache \
@@ -306,6 +333,7 @@ main() {
             --build-arg DOCKER_PACKAGES="$DOCKER_PACKAGES" \
             --build-arg ENABLE_SNAKEMAKE_STACK="$ENABLE_SNAKEMAKE_STACK" \
             --build-arg SNAKEMAKE_VERSION="$SNAKEMAKE_VERSION" \
+            --build-arg ENABLE_AGY="$ENABLE_AGY" \
             -t opencode-dev:latest \
             "$OPENCODE_DOCKER_DIR" || exit_error "🛑 Error: Docker build failed during update"
         echo ""
@@ -326,11 +354,14 @@ main() {
     IMAGE_CODEBOX=$(printf '%s\n' "$IMAGE_ENV" | awk -F= '$1=="CODEBOX_NAME"{print $2; exit}')
     IMAGE_ENABLE_SNAKEMAKE_STACK=$(printf '%s\n' "$IMAGE_ENV" | awk -F= '$1=="ENABLE_SNAKEMAKE_STACK"{print $2; exit}')
     IMAGE_SNAKEMAKE_VERSION=$(printf '%s\n' "$IMAGE_ENV" | awk -F= '$1=="SNAKEMAKE_VERSION"{print $2; exit}')
+    IMAGE_ENABLE_AGY=$(printf '%s\n' "$IMAGE_ENV" | awk -F= '$1=="ENABLE_AGY"{print $2; exit}')
 
     ENV_ENABLE_SNAKEMAKE_STACK=$(read_env_value ENABLE_SNAKEMAKE_STACK)
     ENV_SNAKEMAKE_VERSION=$(read_env_value SNAKEMAKE_VERSION)
+    ENV_ENABLE_AGY=$(read_env_value ENABLE_AGY)
     ENV_ENABLE_SNAKEMAKE_STACK="${ENV_ENABLE_SNAKEMAKE_STACK:-false}"
     ENV_SNAKEMAKE_VERSION="${ENV_SNAKEMAKE_VERSION:-8.30}"
+    ENV_ENABLE_AGY="${ENV_ENABLE_AGY:-false}"
 
     NEEDS_REBUILD=false
     REBUILD_REASON=""
@@ -368,6 +399,15 @@ main() {
         fi
     fi
 
+    if [ -n "$IMAGE_ENABLE_AGY" ] && [ "$IMAGE_ENABLE_AGY" != "$ENV_ENABLE_AGY" ]; then
+        NEEDS_REBUILD=true
+        if [ -n "$REBUILD_REASON" ]; then
+            REBUILD_REASON="$REBUILD_REASON; ENABLE_AGY changed (image: $IMAGE_ENABLE_AGY, current: $ENV_ENABLE_AGY)"
+        else
+            REBUILD_REASON="ENABLE_AGY changed (image: $IMAGE_ENABLE_AGY, current: $ENV_ENABLE_AGY)"
+        fi
+    fi
+
     if [ "$NEEDS_REBUILD" = true ]; then
         echo "---------------------------------------------------------------"
         echo "🏗️  Building OpenCode Docker Image"
@@ -379,9 +419,11 @@ main() {
         local OPENCODE_VERSION=$(read_env_value OPENCODE_VERSION)
         local ENABLE_SNAKEMAKE_STACK=$(read_env_value ENABLE_SNAKEMAKE_STACK)
         local SNAKEMAKE_VERSION=$(read_env_value SNAKEMAKE_VERSION)
+        local ENABLE_AGY=$(read_env_value ENABLE_AGY)
         OPENCODE_VERSION="${OPENCODE_VERSION:-latest}"
         ENABLE_SNAKEMAKE_STACK="${ENABLE_SNAKEMAKE_STACK:-false}"
         SNAKEMAKE_VERSION="${SNAKEMAKE_VERSION:-8.30}"
+        ENABLE_AGY="${ENABLE_AGY:-false}"
         docker build \
             --build-arg UID="$USER_UID" \
             --build-arg GID="$USER_GID" \
@@ -391,6 +433,7 @@ main() {
             --build-arg DOCKER_PACKAGES="$DOCKER_PACKAGES" \
             --build-arg ENABLE_SNAKEMAKE_STACK="$ENABLE_SNAKEMAKE_STACK" \
             --build-arg SNAKEMAKE_VERSION="$SNAKEMAKE_VERSION" \
+            --build-arg ENABLE_AGY="$ENABLE_AGY" \
             -t opencode-dev:latest \
             "$OPENCODE_DOCKER_DIR"
         IMAGE_REBUILT=true
@@ -430,10 +473,12 @@ main() {
     fi
     TZ_VALUE="${TZ_VALUE:-America/Edmonton}"
 
-    # Run OpenCode with current directory as workspace
+    # Run the selected launcher with current directory as workspace
     echo "---------------------------------------------------------------"
     if [ "$BASH_MODE" = true ]; then
         echo "📦 Starting bash session in: $WORKSPACE_DIR"
+    elif [ "$LAUNCHER" = "agy" ]; then
+        echo "📦 Starting Antigravity CLI (agy) in: $WORKSPACE_DIR"
     else
         echo "📦 Starting OpenCode in: $WORKSPACE_DIR"
     fi
@@ -455,6 +500,9 @@ main() {
         echo "   - [OCData]   ${HOME}/.local/share/opencode → /home/${USERNAME}/.local/share/opencode"
         echo "   - [OCState]  ${HOME}/.local/state/opencode → /home/${USERNAME}/.local/state/opencode"
         echo "   - [OCCache]  ${HOME}/.cache/opencode → /home/${USERNAME}/.cache/opencode"
+        if [ "$LAUNCHER" = "agy" ]; then
+            echo "   - [AGYData]  ${HOME}/.gemini → /home/${USERNAME}/.gemini"
+        fi
         if [ "$OAUTH_ENABLED" = true ]; then
             echo "   OAuth callback: http://127.0.0.1:1455"
         fi
@@ -500,6 +548,28 @@ main() {
     # Add OAuth port binding if requested
     if [ "$OAUTH_ENABLED" = true ]; then
         DOCKER_ARGS+=(-p 127.0.0.1:1455:1455)
+    fi
+
+    # Add agy-specific arguments when launching Antigravity CLI
+    if [ "$LAUNCHER" = "agy" ]; then
+        DOCKER_ARGS+=(-e CODEBOX_MODE=agy)
+        DOCKER_ARGS+=(-v "${HOME}/.gemini:/home/${USERNAME}/.gemini")
+        # Enable agy's Remote SSH OAuth flow (browser-based sign-in, no keyring needed).
+        # With AGY_REMOTE_AUTH=true in .env we fabricate SSH env vars so agy prints a
+        # secure authorization URL even when running locally (copy URL -> sign in in
+        # your browser -> paste the code back). Otherwise pass through real SSH vars
+        # when the host session itself is over SSH.
+        local AGY_REMOTE_AUTH=$(read_env_value AGY_REMOTE_AUTH)
+        AGY_REMOTE_AUTH="${AGY_REMOTE_AUTH:-false}"
+        if [ "$AGY_REMOTE_AUTH" = "true" ]; then
+            DOCKER_ARGS+=(-e SSH_CONNECTION="127.0.0.1 22 127.0.0.1 22")
+            DOCKER_ARGS+=(-e SSH_CLIENT="127.0.0.1 22 127.0.0.1")
+            DOCKER_ARGS+=(-e SSH_TTY="/dev/pts/0")
+        else
+            [ -n "${SSH_CONNECTION:-}" ] && DOCKER_ARGS+=(-e SSH_CONNECTION="$SSH_CONNECTION")
+            [ -n "${SSH_CLIENT:-}" ] && DOCKER_ARGS+=(-e SSH_CLIENT="$SSH_CLIENT")
+            [ -n "${SSH_TTY:-}" ] && DOCKER_ARGS+=(-e SSH_TTY="$SSH_TTY")
+        fi
     fi
 
     # Add bash-specific args if in bash mode

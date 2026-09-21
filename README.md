@@ -123,6 +123,9 @@ codebox --continue
 # Update the Docker image to latest OpenCode version
 codebox --upgrade
 
+# Launch Antigravity CLI (agy) instead of OpenCode
+codebox --agy
+
 # Show help
 codebox -h
 
@@ -144,6 +147,7 @@ Options:
   -b, --bash         Open an interactive bash session instead of running OpenCode
   -o, --oauth        Enable OAuth callback port (127.0.0.1:1455) for OpenAI sign-in
   -p, --prune        Prune unused Docker build cache and dangling images before start
+  -a, --agy          Launch Antigravity CLI (agy) instead of OpenCode
   -f, --force        Continue even in protected directories
   -h, --help         Show this help and OpenCode help
 ---------------------------------------------------------------
@@ -282,6 +286,41 @@ HOST_OPENCODE_CONFIG_DIR=/home/your-username/.config/opencode
 ```
 
 For details on supported files, directory structure, and precedence, see `config.opencode.example/README.md` and the `OpenCode Config Directory` section in `.env.example`.
+
+### Antigravity CLI (agy)
+
+CodeBox can launch [Google's Antigravity CLI](https://antigravity.google) (`agy`) instead of OpenCode.
+
+**Enable agy in the image** (opt-in build arg, requires a rebuild):
+
+```bash
+# .env
+ENABLE_AGY=true
+```
+
+The first run of `codebox` will detect the change and rebuild the image with `agy` installed to `/usr/local/bin`. Self-updates are disabled (`AGY_CLI_DISABLE_AUTO_UPDATE=true`), so the version is pinned at build time — rebuild with `codebox --upgrade` to update it.
+
+**Launch agy** — either pass the flag per invocation:
+
+```bash
+codebox --agy
+```
+
+or make it the default launcher in `.env`:
+
+```bash
+# .env
+DEFAULT_LAUNCHER=agy
+```
+
+Arguments not recognized by codebox are forwarded to `agy` (e.g. `codebox --agy "explain this repo"`).
+
+**Data & configuration:** agy stores settings, history, and auth tokens in `~/.gemini/antigravity-cli/`. When launching in agy mode, CodeBox mounts your host `~/.gemini` directory into the container (created automatically if missing) so this data persists across sessions.
+
+**Authentication:** the container has no OS keyring or browser, so two flows are supported:
+
+- **Gemini API key (recommended for reliability):** set `"modelProvider": "gemini"` in `~/.gemini/antigravity-cli/settings.json` and add `GEMINI_API_KEY` to `.env`. This skips the sign-in screen entirely. Get a key at [Google AI Studio](https://aistudio.google.com/app/api-keys).
+- **Remote SSH OAuth flow (Google account):** set `AGY_REMOTE_AUTH=true` in `.env`. CodeBox fabricates SSH environment variables so `agy` uses its browser-based remote sign-in: it prints a secure authorization URL → open it in your local browser → sign in → paste the returned code back into the terminal. The token is stored in the mounted `~/.gemini` directory and persists across sessions. If your host session is already over SSH, the real `SSH_*` variables are passed through automatically.
 
 ### Timezone
 

@@ -8,6 +8,7 @@
 #   - GID: Group ID for the non-root user (default: 1000)
 #   - OPENCODE_VERSION: Version to install, or "latest" (default: latest)
 #   - CODEBOX_NAME: Container root directory name (default: BOX)
+#   - ENABLE_AGY: Install the Antigravity CLI (agy) alongside opencode (default: false)
 #
 # Usage:
 #   Use the provided codebox.sh script to build and run the container easily
@@ -31,6 +32,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG DOCKER_PACKAGES=
 ARG ENABLE_SNAKEMAKE_STACK=false
 ARG SNAKEMAKE_VERSION=8.30
+ARG ENABLE_AGY=false
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -103,6 +105,7 @@ ENV GID=${GID}
 ENV CODEBOX_NAME=${CODEBOX_NAME}
 ENV ENABLE_SNAKEMAKE_STACK=${ENABLE_SNAKEMAKE_STACK}
 ENV SNAKEMAKE_VERSION=${SNAKEMAKE_VERSION}
+ENV ENABLE_AGY=${ENABLE_AGY}
 
 RUN \
     # Check if the GID already exists, if not create it
@@ -190,6 +193,21 @@ RUN ARCH="${TARGETARCH}" && \
     rm /tmp/opencode.tar.gz && \
     # Verify installation
     opencode --version
+
+# ========================================
+# Install optional Antigravity CLI (agy)
+# Runs as root with HOME=/root; the binary is installed to /usr/local/bin
+# and self-updates are disabled so the version is pinned at build time
+# (rebuild with codebox -u to update).
+# ========================================
+RUN if [ "${ENABLE_AGY}" = "true" ]; then \
+      curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /usr/local/bin \
+      && agy --version \
+      && rm -rf /root/.cache/antigravity; \
+    else \
+      echo "Skipping Antigravity CLI install"; \
+    fi
+ENV AGY_CLI_DISABLE_AUTO_UPDATE=true
 
 # ========================================
 # Switch to non-root user
