@@ -133,8 +133,8 @@ RUN \
 # ========================================
 # Create workspace and config directories with proper permissions
 # ========================================
-RUN mkdir -p /${CODEBOX_NAME} /home/${USERNAME}/.config/opencode \
- && chown -R ${UID}:${GID} /${CODEBOX_NAME} /home/${USERNAME}/.config
+RUN mkdir -p /${CODEBOX_NAME} /home/${USERNAME}/.config/opencode /home/${USERNAME}/.local/share/opencode /home/${USERNAME}/.local/state/opencode \
+  && chown -R ${UID}:${GID} /${CODEBOX_NAME} /home/${USERNAME}/.config /home/${USERNAME}/.local
 
 # ========================================
 # Create optional Snakemake + mamba environment
@@ -213,6 +213,13 @@ COPY --chown=${UID}:${GID} dotfiles/docker.bashrc /tmp/docker.bashrc
 # ========================================
 COPY --chown=${UID}:${GID} entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# ========================================
+# Copy custom wl-paste script
+# ========================================
+COPY --chown=${UID}:${GID} wl-paste /home/${USERNAME}/.local/bin/wl-paste
+RUN chmod +x /home/${USERNAME}/.local/bin/wl-paste
+ENV PATH="/home/${USERNAME}/.local/bin:${PATH}"
 
 # TODO:
 # in .env have option for custom gitconfig, gitignore, bash_aliases paths

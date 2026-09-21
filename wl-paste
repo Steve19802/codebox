@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+
+# Path to the actual system binary
+REAL_PASTE="/usr/bin/wl-paste"
+LOG_FILE="/tmp/wl-paste-debug.log"
+
+# Helper function to write logs with a timestamp
+log_trace() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') [PID: $$] $1" >>"$LOG_FILE"
+}
+
+# Log every single time the wrapper is executed and with what arguments
+log_trace "Invoked with arguments: '$@'"
+
+# Initialize tracking flags
+IS_LIST_REQUEST=0
+IS_IMAGE_REQUEST=0
+
+# Loop through all arguments cleanly to intercept Node.js array inputs
+for arg in "$@"; do
+  if [[ "$arg" == "-l" ]] || [[ "$arg" == "--list-types" ]]; then
+    IS_LIST_REQUEST=1
+  fi
+  if [[ "$arg" == "image/png" ]] || [[ "$arg" == "image/bmp" ]]; then
+    IS_IMAGE_REQUEST=1
+  fi
+done
+
+# 1. Handle OpenCode querying for available clipboard formats
+if [ $IS_LIST_REQUEST -eq 1 ]; then
+  # Get the real clipboard types
+  TYPES=$($REAL_PASTE --list-types 2>/dev/null)
+
+  # If the clipboard only has BMP (WSL2 bridge) but no PNG, forge PNG support
+  if echo "$TYPES" | grep -q "image/bmp" && ! echo "$TYPES" | grep -q "image/png"; then
+    echo -e "${TYPES}\nimage/png"
+  else
+    echo "$TYPES"
+  fi
+  exit 0
+fi
+
+# 2. Intercept active paste requests for PNG when only BMP is actually available
+if [ $IS_IMAGE_REQUEST -eq 1 ]; then
+  log_trace "Match: PNG image content requested."
+  TYPES=$($REAL_PASTE --list-types 2>/dev/null)
+
+  log_trace "$TYPES content found"
+  if echo "$TYPES" | grep -q "image/bmp" && ! echo "$TYPES" | grep -q "image/png"; then
+    log_trace "Action: Trapping BMP, buffering, and outputting clean PNG."
+
+    # Create a temporary file to avoid stream flush/corruption bugs
+    TMP_IMG=$(mktemp /tmp/opencode_XXXXXX.png)
+
+    # Extract BMP from bridge and write cleanly to the temp PNG file
+    $REAL_PASTE --type image/bmp 2>/dev/null | convert bmp:- "$TMP_IMG" 2>/dev/null
+
+    # DEBUG LOG: Let's see if the file actually exists and what size it is
+    log_trace "File check: Size of $TMP_IMG is $(ls -l "$TMP_IMG" 2>/dev/null | awk '{print $5}') bytes."
+
+    # If the file was created successfully, dump its content to OpenCode and clean up
+    if [ -s "$TMP_IMG" ]; then
+      log_trace "Success: Temp file created at $TMP_IMG. Streaming bytes now."
+      cat "$TMP_IMG"
+      rm -f "$TMP_IMG"
+      exit 0
+    else
+      log_trace "Error: Temp file was empty or failed to generate."
+      rm -f "$TMP_IMG"
+    fi
+  fi
+fi
+
+# 3. Fallback for all other normal text, files, and standard clipboard requests
+log_trace "Action: Falling back to real system wl-paste."
+exec $REAL_PASTE "$@"

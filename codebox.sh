@@ -490,6 +490,11 @@ main() {
         -v "${HOME}/.local/share/opencode:/home/${USERNAME}/.local/share/opencode"
         -v "${HOME}/.local/state/opencode:/home/${USERNAME}/.local/state/opencode"
         -v "${HOME}/.cache/opencode:/home/${USERNAME}/.cache/opencode"
+        -e TERM="$TERM"
+        -e COLORTERM="truecolor"
+        -e WAYLAND_DISPLAY="$WAYLAND_DISPLAY"
+        -e XDG_RUNTIME_DIR="/tmp"
+        -v "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY":"/tmp/$WAYLAND_DISPLAY"
     )
 
     # Add OAuth port binding if requested
