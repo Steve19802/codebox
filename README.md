@@ -17,6 +17,8 @@ A bash script that runs OpenCode in a Docker container. It dynamically mounts yo
 - **Bash debug mode** - Open an interactive shell for troubleshooting with `--bash`
 - **Optional cache pruning** - Run `--prune` (or enable `AUTO_PRUNE`) to control Docker disk growth
 - **OpenCode v1 or v2 (beta)** - Select the stable or beta release channel with `OPENCODE_CHANNEL` in `.env`
+- **Optional Claude Code CLI** - Install Anthropic's Claude Code CLI and launch it with `--claude` (see [Claude Code CLI](#claude-code-cli))
+- **Configurable launcher** - Choose whether `codebox` starts OpenCode, agy, or Claude by default via `DEFAULT_LAUNCHER`
 
 
 ## Prerequisites
@@ -127,6 +129,12 @@ codebox --upgrade
 # Launch Antigravity CLI (agy) instead of OpenCode
 codebox --agy
 
+# Launch Claude Code CLI instead of OpenCode
+codebox --claude
+
+# Force OpenCode (overrides DEFAULT_LAUNCHER)
+codebox --opencode
+
 # Show help
 codebox -h
 
@@ -140,21 +148,26 @@ codebox --upgrade --version
 ---------------------------------------------------------------
 📦 codebox - OpenCode Docker Launcher
 ---------------------------------------------------------------
-Usage: codebox [options] [opencode-arguments]
+Usage: codebox [options] [tool-arguments]
 
 Options:
   -n, --name NAME    Use NAME as the container root directory (temporary override)
   -u, --update       Rebuild docker and update OpenCode before starting container
-  -b, --bash         Open an interactive bash session instead of running OpenCode
+  -b, --bash         Open an interactive bash session instead of running a tool
   -o, --oauth        Enable OAuth callback port (127.0.0.1:1455) for OpenAI sign-in
   -p, --prune        Prune unused Docker build cache and dangling images before start
   -a, --agy          Launch Antigravity CLI (agy) instead of OpenCode
+  -c, --claude       Launch Claude Code CLI instead of OpenCode
+      --opencode     Launch OpenCode (overrides DEFAULT_LAUNCHER)
   -f, --force        Continue even in protected directories
-  -h, --help         Show this help and OpenCode help
+  -h, --help         Show this help and tool help
+---------------------------------------------------------------
+Launcher (set DEFAULT_LAUNCHER in .env): opencode (default), agy, claude
+Channel  (set OPENCODE_CHANNEL in .env): v1 = stable (default), v2 = beta
 ---------------------------------------------------------------
 ```
 
-Any additional arguments not recognized by codebox are passed directly to OpenCode. For example:
+Any additional arguments not recognized by codebox are passed directly to the launched tool. For example:
 
 ```bash
 codebox --version            # Passed to OpenCode
@@ -234,6 +247,8 @@ When you run `codebox`, these directories are mounted into the container:
 | [`HOST_OPENCODE_CONFIG_DIR`](#opencode-config-directory) | `/home/dev/.config/opencode` | Settings, preferences |
 | `~/.local/share/opencode` | `/home/dev/.local/share/opencode` | Auth tokens, logs |
 | `~/.local/state/opencode` | `/home/dev/.local/state/opencode` | History, state |
+| `~/.claude` | `/home/dev/.claude` | Claude Code config, credentials, sessions (only when `ENABLE_CLAUDE_CLI=true`) |
+| `~/.claude.json` | `/home/dev/.claude.json` | Claude Code app state/onboarding (only when `ENABLE_CLAUDE_CLI=true`) |
 
 ## Configuration
 
@@ -326,6 +341,37 @@ Arguments not recognized by codebox are forwarded to `agy` (e.g. `codebox --agy 
 
 - **Gemini API key (recommended for reliability):** set `"modelProvider": "gemini"` in `~/.gemini/antigravity-cli/settings.json` and add `GEMINI_API_KEY` to `.env`. This skips the sign-in screen entirely. Get a key at [Google AI Studio](https://aistudio.google.com/app/api-keys).
 - **Remote SSH OAuth flow (Google account):** set `AGY_REMOTE_AUTH=true` in `.env`. CodeBox fabricates SSH environment variables so `agy` uses its browser-based remote sign-in: it prints a secure authorization URL → open it in your local browser → sign in → paste the returned code back into the terminal. The token is stored in the mounted `~/.gemini` directory and persists across sessions. If your host session is already over SSH, the real `SSH_*` variables are passed through automatically.
+
+### Claude Code CLI
+
+CodeBox can optionally install [Anthropic's Claude Code CLI](https://code.claude.com/docs) inside the container using the official native installer. This is opt-in at build time.
+
+1. Enable it in `.env`:
+   ```bash
+   ENABLE_CLAUDE_CLI=true
+   # Optionally pin a channel/version: latest | stable | X.Y.Z
+   CLAUDE_CODE_VERSION=latest
+   ```
+2. Rebuild the image:
+   ```bash
+   codebox --update
+   ```
+3. Launch it:
+   ```bash
+   codebox --claude        # Launch Claude Code
+   codebox --opencode      # Launch OpenCode (override)
+   codebox                 # Launch the default launcher (see below)
+   ```
+
+**Choosing the default launcher:** set `DEFAULT_LAUNCHER` in `.env` to `opencode` (default), `agy`, or `claude`. Per-session flags (`--opencode` / `--agy` / `--claude`) take precedence, and `--bash` always opens a shell.
+
+```bash
+DEFAULT_LAUNCHER=claude
+```
+
+**Authentication:** Claude Code uses either `ANTHROPIC_API_KEY` or a `CLAUDE_CODE_OAUTH_TOKEN`. Add one to `.env`. Credentials are stored in `~/.claude/.credentials.json`.
+
+**Persistence:** the host `~/.claude` directory and `~/.claude.json` file are mounted into the container, so global configuration and session history persist across runs. These are the same locations a host Claude Code install uses, so state is shared between host and container. CodeBox creates them if missing.
 
 ### Timezone
 

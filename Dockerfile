@@ -11,6 +11,8 @@
 #                       v1 format: v1.1.20  | v2 format: 2.0.16
 #   - CODEBOX_NAME: Container root directory name (default: BOX)
 #   - ENABLE_AGY: Install the Antigravity CLI (agy) alongside opencode (default: false)
+#   - ENABLE_CLAUDE_CLI: Install Anthropic's Claude Code CLI (default: false)
+#   - CLAUDE_CODE_VERSION: Claude Code channel/version: latest | stable | X.Y.Z (default: latest)
 #
 # Usage:
 #   Use the provided codebox.sh script to build and run the container easily
@@ -35,6 +37,8 @@ ARG DOCKER_PACKAGES=
 ARG ENABLE_SNAKEMAKE_STACK=false
 ARG SNAKEMAKE_VERSION=8.30
 ARG ENABLE_AGY=false
+ARG ENABLE_CLAUDE_CLI=false
+ARG CLAUDE_CODE_VERSION=latest
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -108,6 +112,8 @@ ENV CODEBOX_NAME=${CODEBOX_NAME}
 ENV ENABLE_SNAKEMAKE_STACK=${ENABLE_SNAKEMAKE_STACK}
 ENV SNAKEMAKE_VERSION=${SNAKEMAKE_VERSION}
 ENV ENABLE_AGY=${ENABLE_AGY}
+ENV ENABLE_CLAUDE_CLI=${ENABLE_CLAUDE_CLI}
+ENV CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}
 
 RUN \
     # Check if the GID already exists, if not create it
@@ -299,6 +305,19 @@ RUN ln -sf /home/${USERNAME}/config/dotfiles/bash_aliases /home/${USERNAME}/.bas
  && echo "# ========================================" >> /home/${USERNAME}/.bashrc \
  && cat /tmp/docker.bashrc >> /home/${USERNAME}/.bashrc \
  && rm /tmp/docker.bashrc
+
+# ========================================
+# Optional: install Claude Code CLI (native installer)
+# Runs as the non-root user because the installer writes under $HOME
+# (~/.local/bin/claude symlinked into ~/.local/share/claude/versions/).
+# ========================================
+ENV DISABLE_AUTOUPDATER=1
+RUN if [ "${ENABLE_CLAUDE_CLI}" = "true" ]; then \
+      curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
+      && claude --version; \
+    else \
+      echo "Skipping Claude Code CLI install"; \
+    fi
 
 # ========================================
 # Set BASH_ENV to source bashrc for non-interactive shells
