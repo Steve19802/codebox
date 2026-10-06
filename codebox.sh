@@ -54,6 +54,10 @@ read_env_value() {
 #   -a, --agy          Launch Antigravity CLI (agy) instead of OpenCode
 #   -f, --force        Continue even in protected directories
 #   -h, --help         Show this help and OpenCode help
+#
+# Channel selection (OPENCODE_CHANNEL in .env, default: v1):
+#   v1 = stable OpenCode; v2 = beta OpenCode. Switching channels rewrites the
+#   image (build-time toggle), so it is configured in .env rather than a flag.
 main() {
     # Parse command line arguments first
     local CLI_CODEBOX_NAME=""
@@ -136,6 +140,8 @@ main() {
         echo "  -a, --agy          Launch Antigravity CLI (agy) instead of OpenCode"
         echo "  -f, --force        Continue even in protected directories"
         echo "  -h, --help         Show this help and OpenCode help"
+        echo "---------------------------------------------------------------"
+        echo "Channel (set OPENCODE_CHANNEL in .env): v1 = stable (default), v2 = beta"
         echo "---------------------------------------------------------------"
     fi
 
@@ -238,21 +244,39 @@ main() {
         exit_error "🛑 Error: OPENCODE_DOCKER_DIR must be under \$HOME to derive RELATIVE_PATH"
     fi
 
+    # Resolve the OpenCode release channel (v1 = stable, v2 = beta).
+    # The channel is a build-time toggle: switching it rewrites the image.
+    local OPENCODE_CHANNEL=$(read_env_value OPENCODE_CHANNEL)
+    OPENCODE_CHANNEL="${OPENCODE_CHANNEL:-v1}"
+    if [ "$OPENCODE_CHANNEL" != "v1" ] && [ "$OPENCODE_CHANNEL" != "v2" ]; then
+        exit_error "🛑 Error: OPENCODE_CHANNEL must be 'v1' or 'v2' (got: $OPENCODE_CHANNEL)"
+    fi
+
+    # OpenCode v2 uses isolated host data/state/cache dirs so it cannot mutate
+    # the v1 session database or other stable data.
+    local OC_DIR_SUFFIX=""
+    if [ "$OPENCODE_CHANNEL" = "v2" ]; then
+        OC_DIR_SUFFIX="2"
+    fi
+    local HOST_OC_DATA="$HOME/.local/share/opencode${OC_DIR_SUFFIX}"
+    local HOST_OC_STATE="$HOME/.local/state/opencode${OC_DIR_SUFFIX}"
+    local HOST_OC_CACHE="$HOME/.cache/opencode${OC_DIR_SUFFIX}"
+
     # Create required host directories for OpenCode
-    if [ ! -d ~/.local/share/opencode ] || [ ! -d ~/.local/state/opencode ] || [ ! -d ~/.cache/opencode ]; then
+    if [ ! -d "$HOST_OC_DATA" ] || [ ! -d "$HOST_OC_STATE" ] || [ ! -d "$HOST_OC_CACHE" ]; then
         echo "------------------------------------------------------------------------"
         echo "📁 Missing OpenCode directories used to maintain data and state across sessions..."
-        if [ ! -d ~/.local/share/opencode ]; then
-            echo "  - Creating directory  [OCData]: ${HOME}/.local/share/opencode"
-            mkdir -p ~/.local/share/opencode
+        if [ ! -d "$HOST_OC_DATA" ]; then
+            echo "  - Creating directory  [OCData]: ${HOST_OC_DATA}"
+            mkdir -p "$HOST_OC_DATA"
         fi
-        if [ ! -d ~/.local/state/opencode ]; then
-            echo "  - Creating directory [OCState]: ${HOME}/.local/state/opencode"
-            mkdir -p ~/.local/state/opencode
+        if [ ! -d "$HOST_OC_STATE" ]; then
+            echo "  - Creating directory [OCState]: ${HOST_OC_STATE}"
+            mkdir -p "$HOST_OC_STATE"
         fi
-        if [ ! -d ~/.cache/opencode ]; then
-            echo "  - Creating directory [OCCache]: ${HOME}/.cache/opencode"
-            mkdir -p ~/.cache/opencode
+        if [ ! -d "$HOST_OC_CACHE" ]; then
+            echo "  - Creating directory [OCCache]: ${HOST_OC_CACHE}"
+            mkdir -p "$HOST_OC_CACHE"
         fi
         echo "------------------------------------------------------------------------"
         echo ""
@@ -327,6 +351,7 @@ main() {
             --no-cache \
             --build-arg UID="$USER_UID" \
             --build-arg GID="$USER_GID" \
+            --build-arg OPENCODE_CHANNEL="$OPENCODE_CHANNEL" \
             --build-arg OPENCODE_VERSION="$OPENCODE_VERSION" \
             --build-arg USERNAME="${USERNAME:-dev}" \
             --build-arg CODEBOX_NAME="$CODEBOX_NAME" \
@@ -355,6 +380,7 @@ main() {
     IMAGE_ENABLE_SNAKEMAKE_STACK=$(printf '%s\n' "$IMAGE_ENV" | awk -F= '$1=="ENABLE_SNAKEMAKE_STACK"{print $2; exit}')
     IMAGE_SNAKEMAKE_VERSION=$(printf '%s\n' "$IMAGE_ENV" | awk -F= '$1=="SNAKEMAKE_VERSION"{print $2; exit}')
     IMAGE_ENABLE_AGY=$(printf '%s\n' "$IMAGE_ENV" | awk -F= '$1=="ENABLE_AGY"{print $2; exit}')
+    IMAGE_OPENCODE_CHANNEL=$(printf '%s\n' "$IMAGE_ENV" | awk -F= '$1=="OPENCODE_CHANNEL"{print $2; exit}')
 
     ENV_ENABLE_SNAKEMAKE_STACK=$(read_env_value ENABLE_SNAKEMAKE_STACK)
     ENV_SNAKEMAKE_VERSION=$(read_env_value SNAKEMAKE_VERSION)
@@ -362,6 +388,7 @@ main() {
     ENV_ENABLE_SNAKEMAKE_STACK="${ENV_ENABLE_SNAKEMAKE_STACK:-false}"
     ENV_SNAKEMAKE_VERSION="${ENV_SNAKEMAKE_VERSION:-8.30}"
     ENV_ENABLE_AGY="${ENV_ENABLE_AGY:-false}"
+    ENV_OPENCODE_CHANNEL="${OPENCODE_CHANNEL:-v1}"
 
     NEEDS_REBUILD=false
     REBUILD_REASON=""
@@ -408,6 +435,15 @@ main() {
         fi
     fi
 
+    if [ -n "$IMAGE_OPENCODE_CHANNEL" ] && [ "$IMAGE_OPENCODE_CHANNEL" != "$ENV_OPENCODE_CHANNEL" ]; then
+        NEEDS_REBUILD=true
+        if [ -n "$REBUILD_REASON" ]; then
+            REBUILD_REASON="$REBUILD_REASON; OPENCODE_CHANNEL changed (image: $IMAGE_OPENCODE_CHANNEL, current: $ENV_OPENCODE_CHANNEL)"
+        else
+            REBUILD_REASON="OPENCODE_CHANNEL changed (image: $IMAGE_OPENCODE_CHANNEL, current: $ENV_OPENCODE_CHANNEL)"
+        fi
+    fi
+
     if [ "$NEEDS_REBUILD" = true ]; then
         echo "---------------------------------------------------------------"
         echo "🏗️  Building OpenCode Docker Image"
@@ -427,6 +463,7 @@ main() {
         docker build \
             --build-arg UID="$USER_UID" \
             --build-arg GID="$USER_GID" \
+            --build-arg OPENCODE_CHANNEL="$OPENCODE_CHANNEL" \
             --build-arg OPENCODE_VERSION="$OPENCODE_VERSION" \
             --build-arg USERNAME="${USERNAME:-dev}" \
             --build-arg CODEBOX_NAME="$CODEBOX_NAME" \
@@ -497,9 +534,9 @@ main() {
         if [ -n "$HOST_OPENCODE_CONFIG_DIR" ]; then
             echo "   - [OCConfig] ${HOST_OPENCODE_CONFIG_DIR} → /home/${USERNAME}/.config/opencode"
         fi
-        echo "   - [OCData]   ${HOME}/.local/share/opencode → /home/${USERNAME}/.local/share/opencode"
-        echo "   - [OCState]  ${HOME}/.local/state/opencode → /home/${USERNAME}/.local/state/opencode"
-        echo "   - [OCCache]  ${HOME}/.cache/opencode → /home/${USERNAME}/.cache/opencode"
+        echo "   - [OCData]   ${HOST_OC_DATA} → /home/${USERNAME}/.local/share/opencode"
+        echo "   - [OCState]  ${HOST_OC_STATE} → /home/${USERNAME}/.local/state/opencode"
+        echo "   - [OCCache]  ${HOST_OC_CACHE} → /home/${USERNAME}/.cache/opencode"
         if [ "$LAUNCHER" = "agy" ]; then
             echo "   - [AGYData]  ${HOME}/.gemini → /home/${USERNAME}/.gemini"
         fi
@@ -535,9 +572,9 @@ main() {
         -w "$CONTAINER_WORKDIR"
         -v "$WORKSPACE_DIR:$CONTAINER_WORKDIR"
         "${CONFIG_MOUNT_ARGS[@]}"
-        -v "${HOME}/.local/share/opencode:/home/${USERNAME}/.local/share/opencode"
-        -v "${HOME}/.local/state/opencode:/home/${USERNAME}/.local/state/opencode"
-        -v "${HOME}/.cache/opencode:/home/${USERNAME}/.cache/opencode"
+        -v "${HOST_OC_DATA}:/home/${USERNAME}/.local/share/opencode"
+        -v "${HOST_OC_STATE}:/home/${USERNAME}/.local/state/opencode"
+        -v "${HOST_OC_CACHE}:/home/${USERNAME}/.cache/opencode"
         -e TERM="$TERM"
         -e COLORTERM="truecolor"
         -e WAYLAND_DISPLAY="$WAYLAND_DISPLAY"

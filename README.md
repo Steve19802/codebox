@@ -16,6 +16,7 @@ A bash script that runs OpenCode in a Docker container. It dynamically mounts yo
 - **Customizable config directory** - Mount your own OpenCode config for dotfiles integration
 - **Bash debug mode** - Open an interactive shell for troubleshooting with `--bash`
 - **Optional cache pruning** - Run `--prune` (or enable `AUTO_PRUNE`) to control Docker disk growth
+- **OpenCode v1 or v2 (beta)** - Select the stable or beta release channel with `OPENCODE_CHANNEL` in `.env`
 
 
 ## Prerequisites
@@ -209,7 +210,11 @@ OpenCode uses several directories for different purposes:
 | `~/.local/share/opencode` | **Data**: Auth tokens, logs, session data | Mounted from host |
 | `~/.local/state/opencode` | **State**: History, UI state, Favorites | Mounted from host |
 | `~/.cache/opencode` | **Cache**: Temporary files, downloads | Container only |
-| `~/.opencode/bin/opencode` | **Binary**: OpenCode executable | Container only |
+| `/usr/local/bin/opencode` | **Binary**: OpenCode executable | Container only |
+
+When `OPENCODE_CHANNEL=v2`, the data, state, and cache directories use an `opencode2` suffix on the host
+(`~/.local/share/opencode2`, `~/.local/state/opencode2`, `~/.cache/opencode2`) and are mounted to the same
+container paths, so the v1 session database is never mutated.
 
 Directories mounted on the host will be automatically created if needed on first run of codebox.
 
@@ -341,13 +346,50 @@ GIT_COMMITTER_NAME="Your Name"
 GIT_COMMITTER_EMAIL="your.email@example.com"
 ```
 
+## OpenCode v2 (beta)
+
+CodeBox can install either the stable **v1** channel or the **v2** beta channel. Both use the same `opencode`
+command, so this is a **build-time toggle** configured in `.env` (not a runtime flag), which keeps the image
+deterministic for scripts and integrations:
+
+```bash
+# .env
+OPENCODE_CHANNEL=v2
+```
+
+The channel is baked into the image. Switching it is detected on the next run and rewrites the image
+automatically (or force it with `codebox --upgrade`).
+
+**Data isolation:** v2 writes to `~/.local/share/opencode2`, `~/.local/state/opencode2`, and
+`~/.cache/opencode2` on the host, mounted to the standard container paths. This prevents v2 from mutating the
+v1 session database. Config locations (`~/.config/opencode/opencode.json(c)`) are shared; v2 reads existing v1
+configuration and normalizes it in memory without rewriting the source file.
+
+**What to expect in v2:** the main breaking changes are the plugin API, the server API/clients, and the terminal
+client config (layered `tui.json(c)` files become a single global `~/.config/opencode/cli.json`). Existing
+agents, commands, skills, and server config are intended to keep working. See the
+[OpenCode v2 migration guide](https://opencode.ai/v2/docs/migrate-v1/) for details.
+
+**Version pinning** works per channel via `OPENCODE_VERSION`:
+
+```bash
+# .env
+OPENCODE_CHANNEL=v2
+OPENCODE_VERSION=2.0.16   # omit or set "latest" to track the newest v2 release
+```
+
+To revert to stable, set `OPENCODE_CHANNEL=v1` (or remove the line) and rerun codebox.
+
 ## Updating OpenCode
 
-To update to the latest version:
+To update to the latest version of the currently selected channel:
 
 ```bash
 codebox --upgrade
 ```
+
+`--upgrade` rebuilds with `--pull --no-cache`, so it also picks up a new `latest` release for whichever channel
+`OPENCODE_CHANNEL` is set to.
 
 ## Troubleshooting
 
