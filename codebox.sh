@@ -43,6 +43,83 @@ read_env_value() {
     fi
 }
 
+# Fill the caller's DISPLAY_ARGS array with docker run arguments that forward
+# the host display session (used for clipboard access inside the container).
+# Mode: auto (default) | wayland | x11 | none
+build_display_args() {
+    local mode="${1:-auto}"
+    local wayland_display="${WAYLAND_DISPLAY:-}"
+    local x_display="${DISPLAY:-}"
+    local runtime_dir="${XDG_RUNTIME_DIR:-}"
+
+    if [ "$mode" = "auto" ]; then
+        if [ -n "$wayland_display" ] && [ -n "$runtime_dir" ] && [ -S "$runtime_dir/$wayland_display" ]; then
+            mode="wayland"
+        elif [ -n "$x_display" ]; then
+            mode="x11"
+        else
+            mode="none"
+        fi
+    fi
+
+    case "$mode" in
+        wayland)
+            if [ -z "$wayland_display" ] || [ -z "$runtime_dir" ]; then
+                echo "⚠️  Warning: DISPLAY_FORWARDING=wayland but WAYLAND_DISPLAY or XDG_RUNTIME_DIR is unset; skipping"
+                return 0
+            fi
+            DISPLAY_ARGS=(
+                -e WAYLAND_DISPLAY="$wayland_display"
+                -e XDG_RUNTIME_DIR="/tmp"
+                -v "$runtime_dir/$wayland_display:/tmp/$wayland_display"
+            )
+            ;;
+        x11)
+            if [ -z "$x_display" ]; then
+                echo "⚠️  Warning: DISPLAY_FORWARDING=x11 but DISPLAY is unset; skipping"
+                return 0
+            fi
+            DISPLAY_ARGS=(
+                -e DISPLAY="$x_display"
+                -v /tmp/.X11-unix:/tmp/.X11-unix:ro
+            )
+            # The host Xauthority entries are bound to the host name, which differs
+            # inside the container. Write a copy of the cookie for this display with
+            # the address family set to "wildcard" (ffff) so it matches any host.
+            local host_xauth="${XAUTHORITY:-$HOME/.Xauthority}"
+            local container_xauth="/tmp/.codebox.Xauthority"
+            local codebox_xauth="${runtime_dir:-$HOME/.cache}/codebox.Xauthority"
+            if command -v xauth >/dev/null 2>&1 && [ -f "$host_xauth" ]; then
+                mkdir -p "$(dirname "$codebox_xauth")"
+                : > "$codebox_xauth"
+                chmod 600 "$codebox_xauth"
+                if XAUTHORITY="$host_xauth" xauth nlist "$x_display" 2>/dev/null \
+                        | sed -e 's/^..../ffff/' \
+                        | xauth -f "$codebox_xauth" nmerge - 2>/dev/null \
+                        && [ -s "$codebox_xauth" ]; then
+                    DISPLAY_ARGS+=(
+                        -e XAUTHORITY="$container_xauth"
+                        -v "$codebox_xauth:$container_xauth:ro"
+                    )
+                else
+                    echo "⚠️  Warning: could not extract an X11 cookie for $x_display; clipboard access may fail"
+                fi
+            elif [ -f "$host_xauth" ]; then
+                echo "⚠️  Warning: xauth not found on host; mounting $host_xauth as-is (may not match container host name)"
+                DISPLAY_ARGS+=(
+                    -e XAUTHORITY="$container_xauth"
+                    -v "$host_xauth:$container_xauth:ro"
+                )
+            fi
+            ;;
+        none)
+            ;;
+        *)
+            echo "⚠️  Warning: unknown DISPLAY_FORWARDING value '$mode' (expected auto, wayland, x11, none); skipping"
+            ;;
+    esac
+}
+
 # OpenCode Docker script - run from any directory
 # Usage: codebox [options] [tool-arguments]
 # Options:
@@ -699,6 +776,10 @@ main() {
         )
     fi
 
+    # Forward the host display session so clipboard tools (wl-paste, xclip) work
+    local DISPLAY_ARGS=()
+    build_display_args "$(read_env_value DISPLAY_FORWARDING)"
+
     # Build docker run command with common arguments
     local DOCKER_ARGS=(
         --rm -it
@@ -718,9 +799,7 @@ main() {
         "${CLAUDE_MOUNT_ARGS[@]}"
         -e TERM="$TERM"
         -e COLORTERM="truecolor"
-        -e WAYLAND_DISPLAY="$WAYLAND_DISPLAY"
-        -e XDG_RUNTIME_DIR="/tmp"
-        -v "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY":"/tmp/$WAYLAND_DISPLAY"
+        "${DISPLAY_ARGS[@]}"
     )
 
     # Add OAuth port binding if requested

@@ -388,6 +388,17 @@ If session timestamps appear in UTC, set your local timezone in `.env` so the co
 TZ=America/Edmonton
 ```
 
+### Clipboard
+
+Pasting images into OpenCode or Claude Code needs access to the host display. `codebox` forwards the display session selected by `DISPLAY_FORWARDING` in `.env`:
+
+- `auto` (default): Wayland if the `$WAYLAND_DISPLAY` socket exists, otherwise X11 if `DISPLAY` is set
+- `wayland`: mounts the Wayland socket from `$XDG_RUNTIME_DIR`
+- `x11`: mounts `/tmp/.X11-unix` and a copy of the X11 cookie with a wildcard host name, written to `$XDG_RUNTIME_DIR/codebox.Xauthority` (requires `xauth` on the host)
+- `none`: no display forwarding
+
+Add the matching clipboard tool to `DOCKER_PACKAGES` and rebuild with `codebox -u`: `xclip` for X11, `wl-clipboard` for Wayland.
+
 ### Git Configuration
 
 Add to `.env` for proper commit attribution:
