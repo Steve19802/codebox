@@ -6,7 +6,9 @@
 #   - USERNAME: The non-root user name (default: dev)
 #   - UID: User ID for the non-root user (default: 1000)
 #   - GID: Group ID for the non-root user (default: 1000)
+#   - OPENCODE_CHANNEL: OpenCode release channel: "v1" (stable) or "v2" (beta) (default: v1)
 #   - OPENCODE_VERSION: Version to install, or "latest" (default: latest)
+#                       v1 format: v1.1.20  | v2 format: 2.0.16
 #   - CODEBOX_NAME: Container root directory name (default: BOX)
 #
 # Usage:
@@ -156,10 +158,16 @@ RUN if [ "${ENABLE_SNAKEMAKE_STACK}" = "true" ]; then \
     fi
 
 # ========================================
-# Install OpenCode from GitHub releases
-# Automatically detects platform (amd64/arm64) and downloads the appropriate binary
+# Install OpenCode
+# Channel "v1" installs the stable release from GitHub release tarballs.
+# Channel "v2" installs the beta from the npm platform packages, mirroring
+# https://opencode.ai/v2/install (the tarball ships a native binary, no runtime needed).
+# Automatically detects platform (amd64/arm64) and downloads the appropriate binary.
 # ========================================
+ARG OPENCODE_CHANNEL=v1
 ARG OPENCODE_VERSION=latest
+ENV OPENCODE_CHANNEL=${OPENCODE_CHANNEL}
+ENV OPENCODE_VERSION=${OPENCODE_VERSION}
 RUN ARCH="${TARGETARCH}" && \
     if [ -z "${ARCH}" ]; then \
       if command -v dpkg >/dev/null 2>&1; then \
@@ -173,21 +181,55 @@ RUN ARCH="${TARGETARCH}" && \
       arm64|aarch64) ARCH="arm64" ;; \
     esac && \
     if [ -z "${ARCH}" ]; then \
-      echo "Unsupported architecture for OpenCode download" >&2; \
+      echo "Unsupported architecture for OpenCode install" >&2; \
       exit 1; \
     fi && \
-    # Construct download URL based on version
-    if [ "${OPENCODE_VERSION}" = "latest" ]; then \
-      DOWNLOAD_URL="https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${ARCH}.tar.gz"; \
+    if [ "${OPENCODE_CHANNEL}" = "v2" ]; then \
+      # --- OpenCode v2 (beta) via the npm registry, mirroring the official installer ---
+      TARGET="linux-${ARCH}" && \
+      if [ "${OPENCODE_VERSION}" = "latest" ]; then \
+        METADATA=$(curl -fsSL "https://opencode.ai/update/api/latest/cli/npm") && \
+        VERSION=$(printf '%s' "${METADATA}" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p') && \
+        PACKAGE=$(printf '%s' "${METADATA}" | sed -n 's/.*"package":"\([^"]*\)".*/\1/p') && \
+        if [ -z "${VERSION}" ] || [ -z "${PACKAGE}" ]; then \
+          echo "Failed to resolve latest OpenCode v2 version" >&2; \
+          exit 1; \
+        fi && \
+        SCOPE="${PACKAGE%/cli}"; \
+      else \
+        VERSION="${OPENCODE_VERSION#v}" && \
+        SCOPE="@opencode"; \
+      fi && \
+      PKG="${SCOPE}/cli-${TARGET}" && \
+      HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://registry.npmjs.org/${SCOPE}%2fcli-${TARGET}/${VERSION}" || true) && \
+      if [ "${HTTP_STATUS}" = "404" ]; then \
+        PKG="@opencode-ai/cli-${TARGET}"; \
+        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://registry.npmjs.org/@opencode-ai%2fcli-${TARGET}/${VERSION}" || true); \
+      fi && \
+      if [ "${HTTP_STATUS}" != "200" ]; then \
+        echo "OpenCode v2 version ${VERSION} is not available for ${TARGET} (HTTP ${HTTP_STATUS})" >&2; \
+        exit 1; \
+      fi && \
+      DOWNLOAD_URL="https://registry.npmjs.org/${PKG}/-/cli-${TARGET}-${VERSION}.tgz" && \
+      echo "Downloading OpenCode v2 ${VERSION} from: ${DOWNLOAD_URL}" && \
+      mkdir -p /tmp/opencode-install && \
+      curl -fsSL "${DOWNLOAD_URL}" -o /tmp/opencode.tar.gz && \
+      tar -xzf /tmp/opencode.tar.gz -C /tmp/opencode-install && \
+      install -m 0755 /tmp/opencode-install/package/bin/opencode /usr/local/bin/opencode && \
+      rm -rf /tmp/opencode.tar.gz /tmp/opencode-install; \
     else \
-      DOWNLOAD_URL="https://github.com/anomalyco/opencode/releases/download/${OPENCODE_VERSION}/opencode-linux-${ARCH}.tar.gz"; \
+      # --- OpenCode v1 (stable) via GitHub release tarballs ---
+      if [ "${OPENCODE_VERSION}" = "latest" ]; then \
+        DOWNLOAD_URL="https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${ARCH}.tar.gz"; \
+      else \
+        DOWNLOAD_URL="https://github.com/anomalyco/opencode/releases/download/${OPENCODE_VERSION}/opencode-linux-${ARCH}.tar.gz"; \
+      fi && \
+      echo "Downloading OpenCode v1 from: ${DOWNLOAD_URL}" && \
+      curl -fsSL "${DOWNLOAD_URL}" -o /tmp/opencode.tar.gz && \
+      tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin && \
+      chmod 0755 /usr/local/bin/opencode && \
+      rm /tmp/opencode.tar.gz; \
     fi && \
-    echo "Downloading OpenCode from: ${DOWNLOAD_URL}" && \
-    # Download and install
-    curl -fsSL "${DOWNLOAD_URL}" -o /tmp/opencode.tar.gz && \
-    tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin && \
-    chmod 0755 /usr/local/bin/opencode && \
-    rm /tmp/opencode.tar.gz && \
     # Verify installation
     opencode --version
 
