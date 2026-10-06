@@ -43,6 +43,83 @@ read_env_value() {
     fi
 }
 
+# Fill the caller's DISPLAY_ARGS array with docker run arguments that forward
+# the host display session (used for clipboard access inside the container).
+# Mode: auto (default) | wayland | x11 | none
+build_display_args() {
+    local mode="${1:-auto}"
+    local wayland_display="${WAYLAND_DISPLAY:-}"
+    local x_display="${DISPLAY:-}"
+    local runtime_dir="${XDG_RUNTIME_DIR:-}"
+
+    if [ "$mode" = "auto" ]; then
+        if [ -n "$wayland_display" ] && [ -n "$runtime_dir" ] && [ -S "$runtime_dir/$wayland_display" ]; then
+            mode="wayland"
+        elif [ -n "$x_display" ]; then
+            mode="x11"
+        else
+            mode="none"
+        fi
+    fi
+
+    case "$mode" in
+        wayland)
+            if [ -z "$wayland_display" ] || [ -z "$runtime_dir" ]; then
+                echo "⚠️  Warning: DISPLAY_FORWARDING=wayland but WAYLAND_DISPLAY or XDG_RUNTIME_DIR is unset; skipping"
+                return 0
+            fi
+            DISPLAY_ARGS=(
+                -e WAYLAND_DISPLAY="$wayland_display"
+                -e XDG_RUNTIME_DIR="/tmp"
+                -v "$runtime_dir/$wayland_display:/tmp/$wayland_display"
+            )
+            ;;
+        x11)
+            if [ -z "$x_display" ]; then
+                echo "⚠️  Warning: DISPLAY_FORWARDING=x11 but DISPLAY is unset; skipping"
+                return 0
+            fi
+            DISPLAY_ARGS=(
+                -e DISPLAY="$x_display"
+                -v /tmp/.X11-unix:/tmp/.X11-unix:ro
+            )
+            # The host Xauthority entries are bound to the host name, which differs
+            # inside the container. Write a copy of the cookie for this display with
+            # the address family set to "wildcard" (ffff) so it matches any host.
+            local host_xauth="${XAUTHORITY:-$HOME/.Xauthority}"
+            local container_xauth="/tmp/.codebox.Xauthority"
+            local codebox_xauth="${runtime_dir:-$HOME/.cache}/codebox.Xauthority"
+            if command -v xauth >/dev/null 2>&1 && [ -f "$host_xauth" ]; then
+                mkdir -p "$(dirname "$codebox_xauth")"
+                : > "$codebox_xauth"
+                chmod 600 "$codebox_xauth"
+                if XAUTHORITY="$host_xauth" xauth nlist "$x_display" 2>/dev/null \
+                        | sed -e 's/^..../ffff/' \
+                        | xauth -f "$codebox_xauth" nmerge - 2>/dev/null \
+                        && [ -s "$codebox_xauth" ]; then
+                    DISPLAY_ARGS+=(
+                        -e XAUTHORITY="$container_xauth"
+                        -v "$codebox_xauth:$container_xauth:ro"
+                    )
+                else
+                    echo "⚠️  Warning: could not extract an X11 cookie for $x_display; clipboard access may fail"
+                fi
+            elif [ -f "$host_xauth" ]; then
+                echo "⚠️  Warning: xauth not found on host; mounting $host_xauth as-is (may not match container host name)"
+                DISPLAY_ARGS+=(
+                    -e XAUTHORITY="$container_xauth"
+                    -v "$host_xauth:$container_xauth:ro"
+                )
+            fi
+            ;;
+        none)
+            ;;
+        *)
+            echo "⚠️  Warning: unknown DISPLAY_FORWARDING value '$mode' (expected auto, wayland, x11, none); skipping"
+            ;;
+    esac
+}
+
 # OpenCode Docker script - run from any directory
 # Usage: codebox [options] [tool-arguments]
 # Options:
@@ -53,6 +130,7 @@ read_env_value() {
 #   -p, --prune        Prune unused Docker build cache and dangling images before start
 #   -a, --agy          Launch Antigravity CLI (agy) instead of OpenCode
 #   -c, --claude       Launch Claude Code CLI instead of OpenCode
+#       --claude-config DIR  Use DIR as the host Claude config dir (overrides HOST_CLAUDE_CONFIG_DIR)
 #       --opencode     Launch OpenCode (overrides DEFAULT_LAUNCHER)
 #       --standalone   Start OpenCode v2 with --standalone (overrides OPENCODE_V2_STANDALONE)
 #       --no-standalone  Start OpenCode v2 without --standalone (overrides OPENCODE_V2_STANDALONE)
@@ -79,6 +157,7 @@ main() {
     local PRUNE_REQUESTED=false
     local AGY_MODE=false
     local CLAUDE_MODE=false
+    local CLI_CLAUDE_CONFIG_DIR=""
     local OPENCODE_MODE=false
     local STANDALONE_OVERRIDE=""
 
@@ -111,6 +190,11 @@ main() {
             -c|--claude)
                 CLAUDE_MODE=true
                 shift
+                ;;
+            --claude-config)
+                [ $# -ge 2 ] || exit_error "🛑 Error: --claude-config requires a directory argument"
+                CLI_CLAUDE_CONFIG_DIR="$2"
+                shift 2
                 ;;
             --opencode)
                 OPENCODE_MODE=true
@@ -167,6 +251,7 @@ main() {
         echo "  -p, --prune        Prune unused Docker build cache and dangling images before start"
         echo "  -a, --agy          Launch Antigravity CLI (agy) instead of OpenCode"
         echo "  -c, --claude       Launch Claude Code CLI instead of OpenCode"
+        echo "      --claude-config DIR  Use DIR as the host Claude config dir (overrides HOST_CLAUDE_CONFIG_DIR)"
         echo "      --opencode     Launch OpenCode (overrides DEFAULT_LAUNCHER)"
         echo "      --standalone   Start OpenCode v2 with --standalone (overrides OPENCODE_V2_STANDALONE)"
         echo "      --no-standalone  Start OpenCode v2 without --standalone (overrides OPENCODE_V2_STANDALONE)"
@@ -411,9 +496,32 @@ main() {
         echo ""
     fi
 
+    # Resolve a custom host Claude Code config directory (CLAUDE_CONFIG_DIR style).
+    # Priority: 1. --claude-config, 2. HOST_CLAUDE_CONFIG_DIR in .env,
+    # 3. CLAUDE_CONFIG_DIR in the host environment. Empty = default ~/.claude layout.
+    local HOST_CLAUDE_CONFIG_DIR="$CLI_CLAUDE_CONFIG_DIR"
+    if [ -z "$HOST_CLAUDE_CONFIG_DIR" ]; then
+        HOST_CLAUDE_CONFIG_DIR=$(read_env_value HOST_CLAUDE_CONFIG_DIR)
+    fi
+    if [ -z "$HOST_CLAUDE_CONFIG_DIR" ]; then
+        HOST_CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-}"
+    fi
+    if [ -n "$HOST_CLAUDE_CONFIG_DIR" ]; then
+        HOST_CLAUDE_CONFIG_DIR="${HOST_CLAUDE_CONFIG_DIR/#\~/$HOME}"
+    fi
+
     # Create Claude Code host directories/files so config and sessions persist
     # and can be bind-mounted (Docker mounts a missing file path as a directory).
-    if [ "$ENABLE_CLAUDE_CLI" = "true" ]; then
+    # A custom config directory holds its own .claude.json, so it must already exist.
+    if [ "$ENABLE_CLAUDE_CLI" = "true" ] && [ -n "$HOST_CLAUDE_CONFIG_DIR" ]; then
+        if [ ! -d "$HOST_CLAUDE_CONFIG_DIR" ]; then
+            exit_error "🛑 Error: Claude config directory does not exist or is not a directory.
+   Path: $HOST_CLAUDE_CONFIG_DIR
+   Create it first, then rerun codebox:
+       mkdir -p $HOST_CLAUDE_CONFIG_DIR"
+        fi
+        HOST_CLAUDE_CONFIG_DIR=$(cd "$HOST_CLAUDE_CONFIG_DIR" && pwd -P)
+    elif [ "$ENABLE_CLAUDE_CLI" = "true" ]; then
         if [ ! -d "$HOME/.claude" ]; then
             echo "------------------------------------------------------------------------"
             echo "📁 Creating directory [ClaudeCfg]: ${HOME}/.claude"
@@ -667,7 +775,9 @@ main() {
         if [ "$LAUNCHER" = "agy" ]; then
             echo "   - [AGYData]  ${HOME}/.gemini → /home/${USERNAME}/.gemini"
         fi
-        if [ "$ENABLE_CLAUDE_CLI" = "true" ]; then
+        if [ "$ENABLE_CLAUDE_CLI" = "true" ] && [ -n "$HOST_CLAUDE_CONFIG_DIR" ]; then
+            echo "   - [ClaudeCfg]  ${HOST_CLAUDE_CONFIG_DIR} → /home/${USERNAME}/.claude (CLAUDE_CONFIG_DIR)"
+        elif [ "$ENABLE_CLAUDE_CLI" = "true" ]; then
             echo "   - [ClaudeCfg]  ${HOME}/.claude → /home/${USERNAME}/.claude"
             echo "   - [ClaudeJSON] ${HOME}/.claude.json → /home/${USERNAME}/.claude.json"
         fi
@@ -691,13 +801,25 @@ main() {
     fi
 
     # Mount Claude Code config/state so global config and sessions persist on the host
+    # A custom config dir is exposed via CLAUDE_CONFIG_DIR, so Claude reads
+    # .claude.json from inside it (same layout as on the host). The -e flag
+    # also overrides any CLAUDE_CONFIG_DIR passed through --env-file.
     local CLAUDE_MOUNT_ARGS=()
-    if [ "$ENABLE_CLAUDE_CLI" = "true" ]; then
+    if [ "$ENABLE_CLAUDE_CLI" = "true" ] && [ -n "$HOST_CLAUDE_CONFIG_DIR" ]; then
+        CLAUDE_MOUNT_ARGS=(
+            -v "${HOST_CLAUDE_CONFIG_DIR}:/home/${USERNAME}/.claude"
+            -e CLAUDE_CONFIG_DIR="/home/${USERNAME}/.claude"
+        )
+    elif [ "$ENABLE_CLAUDE_CLI" = "true" ]; then
         CLAUDE_MOUNT_ARGS=(
             -v "${HOME}/.claude:/home/${USERNAME}/.claude"
             -v "${HOME}/.claude.json:/home/${USERNAME}/.claude.json"
         )
     fi
+
+    # Forward the host display session so clipboard tools (wl-paste, xclip) work
+    local DISPLAY_ARGS=()
+    build_display_args "$(read_env_value DISPLAY_FORWARDING)"
 
     # Build docker run command with common arguments
     local DOCKER_ARGS=(
@@ -718,9 +840,7 @@ main() {
         "${CLAUDE_MOUNT_ARGS[@]}"
         -e TERM="$TERM"
         -e COLORTERM="truecolor"
-        -e WAYLAND_DISPLAY="$WAYLAND_DISPLAY"
-        -e XDG_RUNTIME_DIR="/tmp"
-        -v "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY":"/tmp/$WAYLAND_DISPLAY"
+        "${DISPLAY_ARGS[@]}"
     )
 
     # Add OAuth port binding if requested
