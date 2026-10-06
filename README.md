@@ -162,6 +162,7 @@ Options:
   -p, --prune        Prune unused Docker build cache and dangling images before start
   -a, --agy          Launch Antigravity CLI (agy) instead of OpenCode
   -c, --claude       Launch Claude Code CLI instead of OpenCode
+      --claude-config DIR  Use DIR as the host Claude config dir (overrides HOST_CLAUDE_CONFIG_DIR)
       --opencode     Launch OpenCode (overrides DEFAULT_LAUNCHER)
       --standalone   Start OpenCode v2 with --standalone (overrides OPENCODE_V2_STANDALONE)
       --no-standalone  Start OpenCode v2 without --standalone (overrides OPENCODE_V2_STANDALONE)
@@ -379,6 +380,17 @@ DEFAULT_LAUNCHER=claude
 **Authentication:** Claude Code uses either `ANTHROPIC_API_KEY` or a `CLAUDE_CODE_OAUTH_TOKEN`. Add one to `.env`. Credentials are stored in `~/.claude/.credentials.json`.
 
 **Persistence:** the host `~/.claude` directory and `~/.claude.json` file are mounted into the container, so global configuration and session history persist across runs. These are the same locations a host Claude Code install uses, so state is shared between host and container. CodeBox creates them if missing.
+
+**Custom config directory:** if you use `CLAUDE_CONFIG_DIR` on the host (for example, separate work and personal profiles), CodeBox can mount that directory instead. It is mounted at `~/.claude` in the container with `CLAUDE_CONFIG_DIR` pointing to it, so Claude reads `.claude.json` from inside the directory, as it does on the host. The directory must already exist. The first match wins:
+
+1. `--claude-config DIR` (per session)
+2. `HOST_CLAUDE_CONFIG_DIR` in `.env`
+3. `CLAUDE_CONFIG_DIR` in the host environment
+4. Default: `~/.claude` + `~/.claude.json`
+
+```bash
+codebox --claude --claude-config ~/.claude-work
+```
 
 ### Timezone
 

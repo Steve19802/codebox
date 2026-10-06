@@ -130,6 +130,7 @@ build_display_args() {
 #   -p, --prune        Prune unused Docker build cache and dangling images before start
 #   -a, --agy          Launch Antigravity CLI (agy) instead of OpenCode
 #   -c, --claude       Launch Claude Code CLI instead of OpenCode
+#       --claude-config DIR  Use DIR as the host Claude config dir (overrides HOST_CLAUDE_CONFIG_DIR)
 #       --opencode     Launch OpenCode (overrides DEFAULT_LAUNCHER)
 #       --standalone   Start OpenCode v2 with --standalone (overrides OPENCODE_V2_STANDALONE)
 #       --no-standalone  Start OpenCode v2 without --standalone (overrides OPENCODE_V2_STANDALONE)
@@ -156,6 +157,7 @@ main() {
     local PRUNE_REQUESTED=false
     local AGY_MODE=false
     local CLAUDE_MODE=false
+    local CLI_CLAUDE_CONFIG_DIR=""
     local OPENCODE_MODE=false
     local STANDALONE_OVERRIDE=""
 
@@ -188,6 +190,11 @@ main() {
             -c|--claude)
                 CLAUDE_MODE=true
                 shift
+                ;;
+            --claude-config)
+                [ $# -ge 2 ] || exit_error "🛑 Error: --claude-config requires a directory argument"
+                CLI_CLAUDE_CONFIG_DIR="$2"
+                shift 2
                 ;;
             --opencode)
                 OPENCODE_MODE=true
@@ -244,6 +251,7 @@ main() {
         echo "  -p, --prune        Prune unused Docker build cache and dangling images before start"
         echo "  -a, --agy          Launch Antigravity CLI (agy) instead of OpenCode"
         echo "  -c, --claude       Launch Claude Code CLI instead of OpenCode"
+        echo "      --claude-config DIR  Use DIR as the host Claude config dir (overrides HOST_CLAUDE_CONFIG_DIR)"
         echo "      --opencode     Launch OpenCode (overrides DEFAULT_LAUNCHER)"
         echo "      --standalone   Start OpenCode v2 with --standalone (overrides OPENCODE_V2_STANDALONE)"
         echo "      --no-standalone  Start OpenCode v2 without --standalone (overrides OPENCODE_V2_STANDALONE)"
@@ -488,9 +496,32 @@ main() {
         echo ""
     fi
 
+    # Resolve a custom host Claude Code config directory (CLAUDE_CONFIG_DIR style).
+    # Priority: 1. --claude-config, 2. HOST_CLAUDE_CONFIG_DIR in .env,
+    # 3. CLAUDE_CONFIG_DIR in the host environment. Empty = default ~/.claude layout.
+    local HOST_CLAUDE_CONFIG_DIR="$CLI_CLAUDE_CONFIG_DIR"
+    if [ -z "$HOST_CLAUDE_CONFIG_DIR" ]; then
+        HOST_CLAUDE_CONFIG_DIR=$(read_env_value HOST_CLAUDE_CONFIG_DIR)
+    fi
+    if [ -z "$HOST_CLAUDE_CONFIG_DIR" ]; then
+        HOST_CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-}"
+    fi
+    if [ -n "$HOST_CLAUDE_CONFIG_DIR" ]; then
+        HOST_CLAUDE_CONFIG_DIR="${HOST_CLAUDE_CONFIG_DIR/#\~/$HOME}"
+    fi
+
     # Create Claude Code host directories/files so config and sessions persist
     # and can be bind-mounted (Docker mounts a missing file path as a directory).
-    if [ "$ENABLE_CLAUDE_CLI" = "true" ]; then
+    # A custom config directory holds its own .claude.json, so it must already exist.
+    if [ "$ENABLE_CLAUDE_CLI" = "true" ] && [ -n "$HOST_CLAUDE_CONFIG_DIR" ]; then
+        if [ ! -d "$HOST_CLAUDE_CONFIG_DIR" ]; then
+            exit_error "🛑 Error: Claude config directory does not exist or is not a directory.
+   Path: $HOST_CLAUDE_CONFIG_DIR
+   Create it first, then rerun codebox:
+       mkdir -p $HOST_CLAUDE_CONFIG_DIR"
+        fi
+        HOST_CLAUDE_CONFIG_DIR=$(cd "$HOST_CLAUDE_CONFIG_DIR" && pwd -P)
+    elif [ "$ENABLE_CLAUDE_CLI" = "true" ]; then
         if [ ! -d "$HOME/.claude" ]; then
             echo "------------------------------------------------------------------------"
             echo "📁 Creating directory [ClaudeCfg]: ${HOME}/.claude"
@@ -744,7 +775,9 @@ main() {
         if [ "$LAUNCHER" = "agy" ]; then
             echo "   - [AGYData]  ${HOME}/.gemini → /home/${USERNAME}/.gemini"
         fi
-        if [ "$ENABLE_CLAUDE_CLI" = "true" ]; then
+        if [ "$ENABLE_CLAUDE_CLI" = "true" ] && [ -n "$HOST_CLAUDE_CONFIG_DIR" ]; then
+            echo "   - [ClaudeCfg]  ${HOST_CLAUDE_CONFIG_DIR} → /home/${USERNAME}/.claude (CLAUDE_CONFIG_DIR)"
+        elif [ "$ENABLE_CLAUDE_CLI" = "true" ]; then
             echo "   - [ClaudeCfg]  ${HOME}/.claude → /home/${USERNAME}/.claude"
             echo "   - [ClaudeJSON] ${HOME}/.claude.json → /home/${USERNAME}/.claude.json"
         fi
@@ -768,8 +801,16 @@ main() {
     fi
 
     # Mount Claude Code config/state so global config and sessions persist on the host
+    # A custom config dir is exposed via CLAUDE_CONFIG_DIR, so Claude reads
+    # .claude.json from inside it (same layout as on the host). The -e flag
+    # also overrides any CLAUDE_CONFIG_DIR passed through --env-file.
     local CLAUDE_MOUNT_ARGS=()
-    if [ "$ENABLE_CLAUDE_CLI" = "true" ]; then
+    if [ "$ENABLE_CLAUDE_CLI" = "true" ] && [ -n "$HOST_CLAUDE_CONFIG_DIR" ]; then
+        CLAUDE_MOUNT_ARGS=(
+            -v "${HOST_CLAUDE_CONFIG_DIR}:/home/${USERNAME}/.claude"
+            -e CLAUDE_CONFIG_DIR="/home/${USERNAME}/.claude"
+        )
+    elif [ "$ENABLE_CLAUDE_CLI" = "true" ]; then
         CLAUDE_MOUNT_ARGS=(
             -v "${HOME}/.claude:/home/${USERNAME}/.claude"
             -v "${HOME}/.claude.json:/home/${USERNAME}/.claude.json"
