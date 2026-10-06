@@ -54,6 +54,8 @@ read_env_value() {
 #   -a, --agy          Launch Antigravity CLI (agy) instead of OpenCode
 #   -c, --claude       Launch Claude Code CLI instead of OpenCode
 #       --opencode     Launch OpenCode (overrides DEFAULT_LAUNCHER)
+#       --standalone   Start OpenCode v2 with --standalone (overrides OPENCODE_V2_STANDALONE)
+#       --no-standalone  Start OpenCode v2 without --standalone (overrides OPENCODE_V2_STANDALONE)
 #   -f, --force        Continue even in protected directories
 #   -h, --help         Show this help and tool help
 #
@@ -63,6 +65,8 @@ read_env_value() {
 # Channel selection (OPENCODE_CHANNEL in .env, default: v1):
 #   v1 = stable OpenCode; v2 = beta OpenCode. Switching channels rewrites the
 #   image (build-time toggle), so it is configured in .env rather than a flag.
+#   With v2, OPENCODE_V2_STANDALONE=true (default: false) starts OpenCode with
+#   --standalone; override per session with --standalone / --no-standalone.
 main() {
     # Parse command line arguments first
     local CLI_CODEBOX_NAME=""
@@ -76,6 +80,7 @@ main() {
     local AGY_MODE=false
     local CLAUDE_MODE=false
     local OPENCODE_MODE=false
+    local STANDALONE_OVERRIDE=""
 
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -109,6 +114,14 @@ main() {
                 ;;
             --opencode)
                 OPENCODE_MODE=true
+                shift
+                ;;
+            --standalone)
+                STANDALONE_OVERRIDE=true
+                shift
+                ;;
+            --no-standalone)
+                STANDALONE_OVERRIDE=false
                 shift
                 ;;
             -f|--force)
@@ -155,11 +168,14 @@ main() {
         echo "  -a, --agy          Launch Antigravity CLI (agy) instead of OpenCode"
         echo "  -c, --claude       Launch Claude Code CLI instead of OpenCode"
         echo "      --opencode     Launch OpenCode (overrides DEFAULT_LAUNCHER)"
+        echo "      --standalone   Start OpenCode v2 with --standalone (overrides OPENCODE_V2_STANDALONE)"
+        echo "      --no-standalone  Start OpenCode v2 without --standalone (overrides OPENCODE_V2_STANDALONE)"
         echo "  -f, --force        Continue even in protected directories"
         echo "  -h, --help         Show this help and tool help"
         echo "---------------------------------------------------------------"
         echo "Launcher (set DEFAULT_LAUNCHER in .env): opencode (default), agy, claude"
         echo "Channel  (set OPENCODE_CHANNEL in .env): v1 = stable (default), v2 = beta"
+        echo "v2 start (set OPENCODE_V2_STANDALONE in .env): false (default) or true"
         echo "---------------------------------------------------------------"
     fi
 
@@ -270,6 +286,17 @@ main() {
         exit_error "🛑 Error: OPENCODE_CHANNEL must be 'v1' or 'v2' (got: $OPENCODE_CHANNEL)"
     fi
 
+    # Whether OpenCode v2 starts with --standalone (runtime option, no rebuild).
+    # Priority: 1. --standalone/--no-standalone flags, 2. .env, 3. false
+    local OPENCODE_V2_STANDALONE=$(read_env_value OPENCODE_V2_STANDALONE)
+    OPENCODE_V2_STANDALONE="${OPENCODE_V2_STANDALONE:-false}"
+    if [ "$OPENCODE_V2_STANDALONE" != "true" ] && [ "$OPENCODE_V2_STANDALONE" != "false" ]; then
+        exit_error "🛑 Error: OPENCODE_V2_STANDALONE must be 'true' or 'false' (got: $OPENCODE_V2_STANDALONE)"
+    fi
+    if [ -n "$STANDALONE_OVERRIDE" ]; then
+        OPENCODE_V2_STANDALONE="$STANDALONE_OVERRIDE"
+    fi
+
     # OpenCode v2 uses isolated host data/state/cache dirs so it cannot mutate
     # the v1 session database or other stable data.
     local OC_DIR_SUFFIX=""
@@ -363,6 +390,16 @@ main() {
     if [ "$BASH_MODE" != true ] && [ "$LAUNCHER" = "claude" ] && [ "$ENABLE_CLAUDE_CLI" != "true" ]; then
         exit_error "🛑 Error: Claude Code CLI is not installed in the image.
    Set ENABLE_CLAUDE_CLI=true in .env, then run: codebox --update"
+    fi
+
+    # Standalone mode only applies when launching OpenCode on the v2 channel
+    local USE_STANDALONE=false
+    if [ "$OPENCODE_V2_STANDALONE" = "true" ] && [ "$OPENCODE_CHANNEL" = "v2" ] \
+        && [ "$BASH_MODE" != true ] && [ "$LAUNCHER" = "opencode" ]; then
+        USE_STANDALONE=true
+    elif [ -n "$STANDALONE_OVERRIDE" ] && { [ "$OPENCODE_CHANNEL" != "v2" ] || [ "$BASH_MODE" = true ] || [ "$LAUNCHER" != "opencode" ]; }; then
+        echo "⚠️  Warning: --standalone/--no-standalone only applies to OpenCode v2 (OPENCODE_CHANNEL=v2); ignoring"
+        echo ""
     fi
 
     # Ensure host directory for Antigravity CLI (agy) data persists across sessions
@@ -606,6 +643,9 @@ main() {
     else
         echo "📦 Starting OpenCode in: $WORKSPACE_DIR"
     fi
+    if [ "$USE_STANDALONE" = true ]; then
+        echo "   OpenCode v2 mode: standalone"
+    fi
     echo "   Container path: $CONTAINER_WORKDIR"
     echo "   (UID=$USER_UID, GID=$USER_GID, CODEBOX_NAME=$CODEBOX_NAME, TZ=$TZ_VALUE)"
     echo "   Environment: $OPENCODE_DOCKER_DIR/.env"
@@ -716,6 +756,10 @@ main() {
         DOCKER_ARGS+=(--entrypoint /bin/bash)
     elif [ "$LAUNCHER" = "claude" ]; then
         DOCKER_ARGS+=(--entrypoint "/home/${USERNAME}/.local/bin/claude")
+    fi
+
+    if [ "$USE_STANDALONE" = true ]; then
+        OPENCODE_ARGS=(--standalone "${OPENCODE_ARGS[@]}")
     fi
 
     # Run the container

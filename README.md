@@ -135,6 +135,10 @@ codebox --claude
 # Force OpenCode (overrides DEFAULT_LAUNCHER)
 codebox --opencode
 
+# OpenCode v2 only: start with or without --standalone (overrides OPENCODE_V2_STANDALONE)
+codebox --standalone
+codebox --no-standalone
+
 # Show help
 codebox -h
 
@@ -159,11 +163,14 @@ Options:
   -a, --agy          Launch Antigravity CLI (agy) instead of OpenCode
   -c, --claude       Launch Claude Code CLI instead of OpenCode
       --opencode     Launch OpenCode (overrides DEFAULT_LAUNCHER)
+      --standalone   Start OpenCode v2 with --standalone (overrides OPENCODE_V2_STANDALONE)
+      --no-standalone  Start OpenCode v2 without --standalone (overrides OPENCODE_V2_STANDALONE)
   -f, --force        Continue even in protected directories
   -h, --help         Show this help and tool help
 ---------------------------------------------------------------
 Launcher (set DEFAULT_LAUNCHER in .env): opencode (default), agy, claude
 Channel  (set OPENCODE_CHANNEL in .env): v1 = stable (default), v2 = beta
+v2 start (set OPENCODE_V2_STANDALONE in .env): false (default) or true
 ---------------------------------------------------------------
 ```
 
@@ -425,6 +432,12 @@ OPENCODE_VERSION=2.0.16   # omit or set "latest" to track the newest v2 release
 ```
 
 To revert to stable, set `OPENCODE_CHANNEL=v1` (or remove the line) and rerun codebox.
+
+**Standalone mode:** set `OPENCODE_V2_STANDALONE=true` in `.env` to start v2 as `opencode --standalone`
+(default: `false`). Override it per session with `codebox --standalone` or `codebox --no-standalone`. The
+setting takes effect at launch (no rebuild) and is ignored for v1, `--agy`, `--claude`, and `--bash`; passing
+either flag in those cases prints a warning. Because codebox consumes `--standalone`, it is not forwarded to
+OpenCode as a regular argument.
 
 ## Updating OpenCode
 
