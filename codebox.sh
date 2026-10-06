@@ -44,16 +44,21 @@ read_env_value() {
 }
 
 # OpenCode Docker script - run from any directory
-# Usage: codebox [options] [opencode-arguments]
+# Usage: codebox [options] [tool-arguments]
 # Options:
 #   -n, --name NAME    Use NAME as the container root directory (temporary override)
 #   -u, --update       Rebuild docker and update OpenCode before starting container
-#   -b, --bash         Open an interactive bash session instead of running OpenCode
+#   -b, --bash         Open an interactive bash session instead of running a tool
 #   -o, --oauth        Enable OAuth callback port (127.0.0.1:1455) for OpenAI sign-in
 #   -p, --prune        Prune unused Docker build cache and dangling images before start
 #   -a, --agy          Launch Antigravity CLI (agy) instead of OpenCode
+#   -c, --claude       Launch Claude Code CLI instead of OpenCode
+#       --opencode     Launch OpenCode (overrides DEFAULT_LAUNCHER)
 #   -f, --force        Continue even in protected directories
-#   -h, --help         Show this help and OpenCode help
+#   -h, --help         Show this help and tool help
+#
+# Launcher selection (DEFAULT_LAUNCHER in .env, default: opencode):
+#   opencode | agy | claude. Per-session flags take precedence.
 #
 # Channel selection (OPENCODE_CHANNEL in .env, default: v1):
 #   v1 = stable OpenCode; v2 = beta OpenCode. Switching channels rewrites the
@@ -69,6 +74,8 @@ main() {
     local OAUTH_ENABLED=false
     local PRUNE_REQUESTED=false
     local AGY_MODE=false
+    local CLAUDE_MODE=false
+    local OPENCODE_MODE=false
 
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -94,6 +101,14 @@ main() {
                 ;;
             -a|--agy)
                 AGY_MODE=true
+                shift
+                ;;
+            -c|--claude)
+                CLAUDE_MODE=true
+                shift
+                ;;
+            --opencode)
+                OPENCODE_MODE=true
                 shift
                 ;;
             -f|--force)
@@ -130,18 +145,21 @@ main() {
         echo "---------------------------------------------------------------"
         echo "📦 codebox - OpenCode Docker Launcher"
         echo "---------------------------------------------------------------"
-        echo "Usage: codebox [options] [opencode-arguments]"
+        echo "Usage: codebox [options] [tool-arguments]"
         echo "Options:"
         echo "  -n, --name NAME    Use NAME as the container root directory (temporary override)"
         echo "  -u, --update       Rebuild docker and update OpenCode before starting container"
-        echo "  -b, --bash         Open an interactive bash session instead of running OpenCode"
+        echo "  -b, --bash         Open an interactive bash session instead of running a tool"
         echo "  -o, --oauth        Enable OAuth callback port (127.0.0.1:1455) for OpenAI sign-in"
         echo "  -p, --prune        Prune unused Docker build cache and dangling images before start"
         echo "  -a, --agy          Launch Antigravity CLI (agy) instead of OpenCode"
+        echo "  -c, --claude       Launch Claude Code CLI instead of OpenCode"
+        echo "      --opencode     Launch OpenCode (overrides DEFAULT_LAUNCHER)"
         echo "  -f, --force        Continue even in protected directories"
-        echo "  -h, --help         Show this help and OpenCode help"
+        echo "  -h, --help         Show this help and tool help"
         echo "---------------------------------------------------------------"
-        echo "Channel (set OPENCODE_CHANNEL in .env): v1 = stable (default), v2 = beta"
+        echo "Launcher (set DEFAULT_LAUNCHER in .env): opencode (default), agy, claude"
+        echo "Channel  (set OPENCODE_CHANNEL in .env): v1 = stable (default), v2 = beta"
         echo "---------------------------------------------------------------"
     fi
 
@@ -314,13 +332,37 @@ main() {
     CODEBOX_NAME="${CODEBOX_NAME:-BOX}"
     local CONTAINER_WORKDIR="/${CODEBOX_NAME}/${CONTAINER_HOSTNAME}/${WORKSPACE_NAME}"
 
-    # Determine which launcher to run: agy or opencode
-    # Priority: 1. -a/--agy flag, 2. DEFAULT_LAUNCHER in .env, 3. opencode (default)
-    local LAUNCHER="opencode"
+    # Claude Code CLI build settings (from .env)
+    local ENABLE_CLAUDE_CLI=$(read_env_value ENABLE_CLAUDE_CLI)
+    ENABLE_CLAUDE_CLI="${ENABLE_CLAUDE_CLI:-false}"
+    local CLAUDE_CODE_VERSION=$(read_env_value CLAUDE_CODE_VERSION)
+    CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-latest}"
+
+    # Determine which launcher to run: opencode, agy, or claude
+    # Priority: 1. explicit flags (--opencode/--claude/--agy), 2. DEFAULT_LAUNCHER
+    # in .env, 3. opencode (default)
     local DEFAULT_LAUNCHER=$(read_env_value DEFAULT_LAUNCHER)
     DEFAULT_LAUNCHER="${DEFAULT_LAUNCHER:-opencode}"
-    if [ "$AGY_MODE" = true ] || [ "$DEFAULT_LAUNCHER" = "agy" ]; then
+    case "$DEFAULT_LAUNCHER" in
+        opencode|agy|claude) ;;
+        *)
+            exit_error "🛑 Error: DEFAULT_LAUNCHER must be 'opencode', 'agy', or 'claude' (got: $DEFAULT_LAUNCHER)"
+            ;;
+    esac
+    local LAUNCHER="$DEFAULT_LAUNCHER"
+    if [ "$AGY_MODE" = true ]; then
         LAUNCHER="agy"
+    fi
+    if [ "$CLAUDE_MODE" = true ]; then
+        LAUNCHER="claude"
+    fi
+    if [ "$OPENCODE_MODE" = true ]; then
+        LAUNCHER="opencode"
+    fi
+
+    if [ "$BASH_MODE" != true ] && [ "$LAUNCHER" = "claude" ] && [ "$ENABLE_CLAUDE_CLI" != "true" ]; then
+        exit_error "🛑 Error: Claude Code CLI is not installed in the image.
+   Set ENABLE_CLAUDE_CLI=true in .env, then run: codebox --update"
     fi
 
     # Ensure host directory for Antigravity CLI (agy) data persists across sessions
@@ -330,6 +372,23 @@ main() {
         mkdir -p "$HOME/.gemini"
         echo "------------------------------------------------------------------------"
         echo ""
+    fi
+
+    # Create Claude Code host directories/files so config and sessions persist
+    # and can be bind-mounted (Docker mounts a missing file path as a directory).
+    if [ "$ENABLE_CLAUDE_CLI" = "true" ]; then
+        if [ ! -d "$HOME/.claude" ]; then
+            echo "------------------------------------------------------------------------"
+            echo "📁 Creating directory [ClaudeCfg]: ${HOME}/.claude"
+            mkdir -p "$HOME/.claude"
+            echo "------------------------------------------------------------------------"
+            echo ""
+        fi
+        if [ -d "$HOME/.claude.json" ]; then
+            exit_error "🛑 Error: ${HOME}/.claude.json is a directory; remove or rename it before running codebox."
+        elif [ ! -e "$HOME/.claude.json" ]; then
+            printf '{}\n' > "$HOME/.claude.json"
+        fi
     fi
 
     if [ "$UPDATE_REQUESTED" = true ]; then
@@ -359,6 +418,8 @@ main() {
             --build-arg ENABLE_SNAKEMAKE_STACK="$ENABLE_SNAKEMAKE_STACK" \
             --build-arg SNAKEMAKE_VERSION="$SNAKEMAKE_VERSION" \
             --build-arg ENABLE_AGY="$ENABLE_AGY" \
+            --build-arg ENABLE_CLAUDE_CLI="$ENABLE_CLAUDE_CLI" \
+            --build-arg CLAUDE_CODE_VERSION="$CLAUDE_CODE_VERSION" \
             -t opencode-dev:latest \
             "$OPENCODE_DOCKER_DIR" || exit_error "🛑 Error: Docker build failed during update"
         echo ""
@@ -381,6 +442,8 @@ main() {
     IMAGE_SNAKEMAKE_VERSION=$(printf '%s\n' "$IMAGE_ENV" | awk -F= '$1=="SNAKEMAKE_VERSION"{print $2; exit}')
     IMAGE_ENABLE_AGY=$(printf '%s\n' "$IMAGE_ENV" | awk -F= '$1=="ENABLE_AGY"{print $2; exit}')
     IMAGE_OPENCODE_CHANNEL=$(printf '%s\n' "$IMAGE_ENV" | awk -F= '$1=="OPENCODE_CHANNEL"{print $2; exit}')
+    IMAGE_ENABLE_CLAUDE_CLI=$(printf '%s\n' "$IMAGE_ENV" | awk -F= '$1=="ENABLE_CLAUDE_CLI"{print $2; exit}')
+    IMAGE_CLAUDE_CODE_VERSION=$(printf '%s\n' "$IMAGE_ENV" | awk -F= '$1=="CLAUDE_CODE_VERSION"{print $2; exit}')
 
     ENV_ENABLE_SNAKEMAKE_STACK=$(read_env_value ENABLE_SNAKEMAKE_STACK)
     ENV_SNAKEMAKE_VERSION=$(read_env_value SNAKEMAKE_VERSION)
@@ -389,6 +452,8 @@ main() {
     ENV_SNAKEMAKE_VERSION="${ENV_SNAKEMAKE_VERSION:-8.30}"
     ENV_ENABLE_AGY="${ENV_ENABLE_AGY:-false}"
     ENV_OPENCODE_CHANNEL="${OPENCODE_CHANNEL:-v1}"
+    ENV_ENABLE_CLAUDE_CLI="${ENABLE_CLAUDE_CLI:-false}"
+    ENV_CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-latest}"
 
     NEEDS_REBUILD=false
     REBUILD_REASON=""
@@ -444,6 +509,24 @@ main() {
         fi
     fi
 
+    if [ -n "$IMAGE_ENABLE_CLAUDE_CLI" ] && [ "$IMAGE_ENABLE_CLAUDE_CLI" != "$ENV_ENABLE_CLAUDE_CLI" ]; then
+        NEEDS_REBUILD=true
+        if [ -n "$REBUILD_REASON" ]; then
+            REBUILD_REASON="$REBUILD_REASON; ENABLE_CLAUDE_CLI changed (image: $IMAGE_ENABLE_CLAUDE_CLI, current: $ENV_ENABLE_CLAUDE_CLI)"
+        else
+            REBUILD_REASON="ENABLE_CLAUDE_CLI changed (image: $IMAGE_ENABLE_CLAUDE_CLI, current: $ENV_ENABLE_CLAUDE_CLI)"
+        fi
+    fi
+
+    if [ -n "$IMAGE_CLAUDE_CODE_VERSION" ] && [ "$IMAGE_CLAUDE_CODE_VERSION" != "$ENV_CLAUDE_CODE_VERSION" ]; then
+        NEEDS_REBUILD=true
+        if [ -n "$REBUILD_REASON" ]; then
+            REBUILD_REASON="$REBUILD_REASON; CLAUDE_CODE_VERSION changed (image: $IMAGE_CLAUDE_CODE_VERSION, current: $ENV_CLAUDE_CODE_VERSION)"
+        else
+            REBUILD_REASON="CLAUDE_CODE_VERSION changed (image: $IMAGE_CLAUDE_CODE_VERSION, current: $ENV_CLAUDE_CODE_VERSION)"
+        fi
+    fi
+
     if [ "$NEEDS_REBUILD" = true ]; then
         echo "---------------------------------------------------------------"
         echo "🏗️  Building OpenCode Docker Image"
@@ -471,6 +554,8 @@ main() {
             --build-arg ENABLE_SNAKEMAKE_STACK="$ENABLE_SNAKEMAKE_STACK" \
             --build-arg SNAKEMAKE_VERSION="$SNAKEMAKE_VERSION" \
             --build-arg ENABLE_AGY="$ENABLE_AGY" \
+            --build-arg ENABLE_CLAUDE_CLI="$ENABLE_CLAUDE_CLI" \
+            --build-arg CLAUDE_CODE_VERSION="$CLAUDE_CODE_VERSION" \
             -t opencode-dev:latest \
             "$OPENCODE_DOCKER_DIR"
         IMAGE_REBUILT=true
@@ -516,6 +601,8 @@ main() {
         echo "📦 Starting bash session in: $WORKSPACE_DIR"
     elif [ "$LAUNCHER" = "agy" ]; then
         echo "📦 Starting Antigravity CLI (agy) in: $WORKSPACE_DIR"
+    elif [ "$LAUNCHER" = "claude" ]; then
+        echo "📦 Starting Claude Code in: $WORKSPACE_DIR"
     else
         echo "📦 Starting OpenCode in: $WORKSPACE_DIR"
     fi
@@ -540,6 +627,10 @@ main() {
         if [ "$LAUNCHER" = "agy" ]; then
             echo "   - [AGYData]  ${HOME}/.gemini → /home/${USERNAME}/.gemini"
         fi
+        if [ "$ENABLE_CLAUDE_CLI" = "true" ]; then
+            echo "   - [ClaudeCfg]  ${HOME}/.claude → /home/${USERNAME}/.claude"
+            echo "   - [ClaudeJSON] ${HOME}/.claude.json → /home/${USERNAME}/.claude.json"
+        fi
         if [ "$OAUTH_ENABLED" = true ]; then
             echo "   OAuth callback: http://127.0.0.1:1455"
         fi
@@ -559,6 +650,15 @@ main() {
         CONFIG_MOUNT_ARGS=(-v "${HOST_OPENCODE_CONFIG_DIR}:/home/${USERNAME}/.config/opencode")
     fi
 
+    # Mount Claude Code config/state so global config and sessions persist on the host
+    local CLAUDE_MOUNT_ARGS=()
+    if [ "$ENABLE_CLAUDE_CLI" = "true" ]; then
+        CLAUDE_MOUNT_ARGS=(
+            -v "${HOME}/.claude:/home/${USERNAME}/.claude"
+            -v "${HOME}/.claude.json:/home/${USERNAME}/.claude.json"
+        )
+    fi
+
     # Build docker run command with common arguments
     local DOCKER_ARGS=(
         --rm -it
@@ -575,6 +675,7 @@ main() {
         -v "${HOST_OC_DATA}:/home/${USERNAME}/.local/share/opencode"
         -v "${HOST_OC_STATE}:/home/${USERNAME}/.local/state/opencode"
         -v "${HOST_OC_CACHE}:/home/${USERNAME}/.cache/opencode"
+        "${CLAUDE_MOUNT_ARGS[@]}"
         -e TERM="$TERM"
         -e COLORTERM="truecolor"
         -e WAYLAND_DISPLAY="$WAYLAND_DISPLAY"
@@ -609,9 +710,12 @@ main() {
         fi
     fi
 
-    # Add bash-specific args if in bash mode
+    # Select the container entrypoint
+    # Priority: bash mode > Claude Code > default entrypoint (OpenCode/agy)
     if [ "$BASH_MODE" = true ]; then
         DOCKER_ARGS+=(--entrypoint /bin/bash)
+    elif [ "$LAUNCHER" = "claude" ]; then
+        DOCKER_ARGS+=(--entrypoint "/home/${USERNAME}/.local/bin/claude")
     fi
 
     # Run the container
