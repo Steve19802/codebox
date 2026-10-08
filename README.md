@@ -402,14 +402,26 @@ TZ=America/Edmonton
 
 ### Clipboard
 
-Pasting images into OpenCode or Claude Code needs access to the host display. `codebox` forwards the display session selected by `DISPLAY_FORWARDING` in `.env`:
+Pasting from the host clipboard into OpenCode or Claude Code needs access to the host display. `codebox` forwards the display sessions selected by `DISPLAY_FORWARDING` in `.env`:
 
-- `auto` (default): Wayland if the `$WAYLAND_DISPLAY` socket exists, otherwise X11 if `DISPLAY` is set
+- `auto` (default): forwards every session it finds: Wayland if the `$WAYLAND_DISPLAY` socket exists, and X11 if `DISPLAY` is set
 - `wayland`: mounts the Wayland socket from `$XDG_RUNTIME_DIR`
-- `x11`: mounts `/tmp/.X11-unix` and a copy of the X11 cookie with a wildcard host name, written to `$XDG_RUNTIME_DIR/codebox.Xauthority` (requires `xauth` on the host)
+- `x11`: mounts `/tmp/.X11-unix` and a copy of the X11 cookie
+- `both`: forwards Wayland and X11, warning about any that is unavailable
 - `none`: no display forwarding
 
-Add the matching clipboard tool to `DOCKER_PACKAGES` and rebuild with `codebox -u`: `xclip` for X11, `wl-clipboard` for Wayland.
+**Why X11 is forwarded on Wayland desktops:** OpenCode v2 reads the clipboard through a Wayland clipboard-manager protocol that GNOME (Mutter) does not offer, so on GNOME it falls back to Xwayland. KDE Plasma, Sway and Hyprland work with Wayland alone, and forwarding X11 as well does no harm there. Do not use `DISPLAY_FORWARDING=wayland` on GNOME hosts.
+
+**X11 cookie:** the host cookie is bound to the host name, which differs inside the container. Each launch writes its own copy with a wildcard host name to `$XDG_RUNTIME_DIR/codebox-xauth/`, mounted read-only at `/tmp/.codebox.Xauthority`. Files that no container mounts any more are removed on the next launch. This requires `xauth` on the host; without it the host Xauthority file is mounted as-is, with a warning, and may not match.
+
+**Packages:**
+
+- OpenCode v2 talks to the display directly and needs `libxcb1` and `libwayland-client0`, which are included in the image. They are loaded at runtime, so if they are missing paste silently does nothing.
+- Claude Code needs a clipboard tool: add `xclip` (X11) or `wl-clipboard` (Wayland) to `DOCKER_PACKAGES` and rebuild with `codebox -u`.
+
+**Pasting in OpenCode v2:** Ctrl+V pastes an image or text from the host clipboard (image first). Ctrl+Shift+V is the terminal's own text paste and does not go through OpenCode.
+
+**Known limitation:** the cookie is a snapshot. If Xwayland restarts on the host (for example after logging out and in), containers started earlier fail with `Authorization required` and must be relaunched.
 
 ### Git Configuration
 
@@ -490,6 +502,27 @@ sudo usermod -aG docker $USER
 ```
 
 After re-login, re-run `codebox` and the build should proceed.
+
+### Clipboard paste not working
+
+Run these checks inside the container (`codebox --bash`):
+
+| Check | Command | Expected |
+|---|---|---|
+| Display variables | `env \| grep -E '^(DISPLAY\|WAYLAND_DISPLAY\|XAUTHORITY\|XDG_RUNTIME_DIR)='` | `DISPLAY` and `XAUTHORITY=/tmp/.codebox.Xauthority`, plus the Wayland variables on Wayland hosts |
+| Sockets mounted | `ls -l /tmp/.X11-unix/ /tmp/$WAYLAND_DISPLAY` | `X0` (or your display) and the Wayland socket |
+| Cookie not empty | `wc -c "$XAUTHORITY"` | more than 0 bytes |
+| Libraries present | `ldconfig -p \| grep -E 'libxcb.so.1\|libwayland-client.so.0'` | both listed |
+| X11 access works | `xclip -selection clipboard -o` (needs `xclip`) | the clipboard contents, not `Authorization required` |
+| Paste key binding | `grep -A3 keybinds ~/.config/opencode/cli.json` | no `prompt.paste` override (the default is Ctrl+V) |
+
+On the host, `WAYLAND_DEBUG=1 wl-paste 2>&1 | grep -E 'data_control_manager|wl_data_device_manager'` shows whether the compositor offers a clipboard-manager protocol. If no `data_control_manager` appears, OpenCode v2 needs X11.
+
+| Symptom | Likely cause |
+|---|---|
+| Ctrl+V does nothing, no error | X11 not forwarded (`DISPLAY_FORWARDING=wayland` on GNOME), missing libraries, or `prompt.paste` rebound in `cli.json` |
+| `Authorization required, but no authorization protocol specified` | Xwayland restarted on the host after the container started: relaunch the container |
+| `wl-paste` works but OpenCode does not | Expected on GNOME without X11: `wl-paste` briefly opens a focused window, which OpenCode does not do |
 
 
 ### Check Version
