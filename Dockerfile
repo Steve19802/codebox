@@ -50,6 +50,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     less \
     jq \
     tzdata \
+    wl-clipboard \
+    libxcb1 \
+    libwayland-client0 \
     ${DOCKER_PACKAGES} \
  && rm -rf /var/lib/apt/lists/*
 

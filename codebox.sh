@@ -45,79 +45,105 @@ read_env_value() {
 
 # Fill the caller's DISPLAY_ARGS array with docker run arguments that forward
 # the host display session (used for clipboard access inside the container).
-# Mode: auto (default) | wayland | x11 | none
+# Mode: auto (default) | wayland | x11 | both | none
+# auto forwards every available session: clients such as OpenTUI need X11 as a
+# fallback on compositors without a data-control protocol (e.g. GNOME/Mutter).
 build_display_args() {
     local mode="${1:-auto}"
     local wayland_display="${WAYLAND_DISPLAY:-}"
     local x_display="${DISPLAY:-}"
     local runtime_dir="${XDG_RUNTIME_DIR:-}"
-
-    if [ "$mode" = "auto" ]; then
-        if [ -n "$wayland_display" ] && [ -n "$runtime_dir" ] && [ -S "$runtime_dir/$wayland_display" ]; then
-            mode="wayland"
-        elif [ -n "$x_display" ]; then
-            mode="x11"
-        else
-            mode="none"
-        fi
-    fi
+    DISPLAY_ARGS=()
 
     case "$mode" in
-        wayland)
-            if [ -z "$wayland_display" ] || [ -z "$runtime_dir" ]; then
-                echo "⚠️  Warning: DISPLAY_FORWARDING=wayland but WAYLAND_DISPLAY or XDG_RUNTIME_DIR is unset; skipping"
-                return 0
+        auto)
+            if [ -n "$wayland_display" ] && [ -n "$runtime_dir" ] && [ -S "$runtime_dir/$wayland_display" ]; then
+                _add_wayland_display_args
             fi
-            DISPLAY_ARGS=(
-                -e WAYLAND_DISPLAY="$wayland_display"
-                -e XDG_RUNTIME_DIR="/tmp"
-                -v "$runtime_dir/$wayland_display:/tmp/$wayland_display"
-            )
-            ;;
-        x11)
-            if [ -z "$x_display" ]; then
-                echo "⚠️  Warning: DISPLAY_FORWARDING=x11 but DISPLAY is unset; skipping"
-                return 0
-            fi
-            DISPLAY_ARGS=(
-                -e DISPLAY="$x_display"
-                -v /tmp/.X11-unix:/tmp/.X11-unix:ro
-            )
-            # The host Xauthority entries are bound to the host name, which differs
-            # inside the container. Write a copy of the cookie for this display with
-            # the address family set to "wildcard" (ffff) so it matches any host.
-            local host_xauth="${XAUTHORITY:-$HOME/.Xauthority}"
-            local container_xauth="/tmp/.codebox.Xauthority"
-            local codebox_xauth="${runtime_dir:-$HOME/.cache}/codebox.Xauthority"
-            if command -v xauth >/dev/null 2>&1 && [ -f "$host_xauth" ]; then
-                mkdir -p "$(dirname "$codebox_xauth")"
-                : > "$codebox_xauth"
-                chmod 600 "$codebox_xauth"
-                if XAUTHORITY="$host_xauth" xauth nlist "$x_display" 2>/dev/null \
-                        | sed -e 's/^..../ffff/' \
-                        | xauth -f "$codebox_xauth" nmerge - 2>/dev/null \
-                        && [ -s "$codebox_xauth" ]; then
-                    DISPLAY_ARGS+=(
-                        -e XAUTHORITY="$container_xauth"
-                        -v "$codebox_xauth:$container_xauth:ro"
-                    )
-                else
-                    echo "⚠️  Warning: could not extract an X11 cookie for $x_display; clipboard access may fail"
-                fi
-            elif [ -f "$host_xauth" ]; then
-                echo "⚠️  Warning: xauth not found on host; mounting $host_xauth as-is (may not match container host name)"
-                DISPLAY_ARGS+=(
-                    -e XAUTHORITY="$container_xauth"
-                    -v "$host_xauth:$container_xauth:ro"
-                )
+            if [ -n "$x_display" ]; then
+                _add_x11_display_args
             fi
             ;;
-        none)
+        wayland) _add_wayland_display_args ;;
+        x11) _add_x11_display_args ;;
+        both)
+            _add_wayland_display_args
+            _add_x11_display_args
             ;;
+        none) ;;
         *)
-            echo "⚠️  Warning: unknown DISPLAY_FORWARDING value '$mode' (expected auto, wayland, x11, none); skipping"
+            echo "⚠️  Warning: unknown DISPLAY_FORWARDING value '$mode' (expected auto, wayland, x11, both, none); skipping"
             ;;
     esac
+}
+
+# Helpers read wayland_display, x_display and runtime_dir from build_display_args' locals
+# (bash dynamic scoping) and append to DISPLAY_ARGS.
+_add_wayland_display_args() {
+    if [ -z "$wayland_display" ] || [ -z "$runtime_dir" ]; then
+        echo "⚠️  Warning: Wayland forwarding requested but WAYLAND_DISPLAY or XDG_RUNTIME_DIR is unset; skipping"
+        return 0
+    fi
+    DISPLAY_ARGS+=(
+        -e WAYLAND_DISPLAY="$wayland_display"
+        -e XDG_RUNTIME_DIR="/tmp"
+        -v "$runtime_dir/$wayland_display:/tmp/$wayland_display"
+    )
+}
+
+# Remove per-launch cookie files that no existing container (running or stopped) mounts.
+_cleanup_codebox_xauth() {
+    local xauth_dir="$1" file
+    local mounted
+    mounted=$(docker ps -aq 2>/dev/null \
+        | xargs -r docker inspect --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' 2>/dev/null)
+    for file in "$xauth_dir"/Xauthority.*; do
+        [ -e "$file" ] || continue
+        grep -qxF "$file" <<< "$mounted" || rm -f "$file"
+    done
+}
+
+_add_x11_display_args() {
+    if [ -z "$x_display" ]; then
+        echo "⚠️  Warning: X11 forwarding requested but DISPLAY is unset; skipping"
+        return 0
+    fi
+    DISPLAY_ARGS+=(
+        -e DISPLAY="$x_display"
+        -v /tmp/.X11-unix:/tmp/.X11-unix:ro
+    )
+    # The host Xauthority entries are bound to the host name, which differs
+    # inside the container. Write a copy of the cookie for this display with
+    # the address family set to "wildcard" (ffff) so it matches any host.
+    # Each launch gets its own file: a shared file would be rewritten under
+    # containers that already bind-mount it, breaking their X11 auth.
+    local host_xauth="${XAUTHORITY:-$HOME/.Xauthority}"
+    local container_xauth="/tmp/.codebox.Xauthority"
+    if command -v xauth >/dev/null 2>&1 && [ -f "$host_xauth" ]; then
+        local xauth_dir="${runtime_dir:-$HOME/.cache}/codebox-xauth"
+        mkdir -p "$xauth_dir" && chmod 700 "$xauth_dir"
+        _cleanup_codebox_xauth "$xauth_dir"
+        local codebox_xauth
+        codebox_xauth=$(mktemp "$xauth_dir/Xauthority.XXXXXX")
+        if XAUTHORITY="$host_xauth" xauth nlist "$x_display" 2>/dev/null \
+                | sed -e 's/^..../ffff/' \
+                | xauth -f "$codebox_xauth" nmerge - 2>/dev/null \
+                && [ -s "$codebox_xauth" ]; then
+            DISPLAY_ARGS+=(
+                -e XAUTHORITY="$container_xauth"
+                -v "$codebox_xauth:$container_xauth:ro"
+            )
+        else
+            rm -f "$codebox_xauth"
+            echo "⚠️  Warning: could not extract an X11 cookie for $x_display; clipboard access may fail"
+        fi
+    elif [ -f "$host_xauth" ]; then
+        echo "⚠️  Warning: xauth not found on host; mounting $host_xauth as-is (may not match container host name)"
+        DISPLAY_ARGS+=(
+            -e XAUTHORITY="$container_xauth"
+            -v "$host_xauth:$container_xauth:ro"
+        )
+    fi
 }
 
 # OpenCode Docker script - run from any directory
