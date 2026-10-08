@@ -344,8 +344,10 @@ main() {
     export USER_UID=$(id -u)
     export USER_GID=$(id -g)
 
-    # Username in container (from .env or default)
-    local USERNAME="${USERNAME:-dev}"
+    # Username in container (from .env or default). The shell's USERNAME is
+    # deliberately ignored: many hosts export it with the login name.
+    local USERNAME=$(read_env_value USERNAME)
+    USERNAME="${USERNAME:-dev}"
 
     # Check if OpenCode Docker directory exists
     if [ ! -d "$OPENCODE_DOCKER_DIR" ]; then

@@ -132,8 +132,8 @@ RUN \
         EXISTING_USER=$(getent passwd ${UID} | cut -d: -f1); \
         if [ "${EXISTING_USER}" != "${USERNAME}" ]; then \
             echo "User ${EXISTING_USER} already exists with UID ${UID}"; \
-            # Rename the existing user if it's 'ubuntu' and we want 'dev'
-            if [ "${EXISTING_USER}" = "ubuntu" ] && [ "${USERNAME}" = "dev" ]; then \
+            # Rename the image's default 'ubuntu' user to the requested name
+            if [ "${EXISTING_USER}" = "ubuntu" ]; then \
                 usermod -l ${USERNAME} ${EXISTING_USER}; \
                 groupmod -n ${USERNAME} ${EXISTING_USER} 2>/dev/null || true; \
                 usermod -d /home/${USERNAME} -m ${USERNAME} 2>/dev/null || true; \
